@@ -22,10 +22,20 @@ import { disposeTerminal } from "@/lib/terminals";
 
 const persistStore = new LazyStore("termo-config.json");
 
+const DEFAULT_FONT_FAMILY =
+  '"Cascadia Mono", Consolas, "Courier New", monospace';
+const DEFAULT_FONT_SIZE = 14;
+
+export interface Settings {
+  fontFamily: string;
+  fontSize: number;
+}
+
 interface PersistedState {
   profiles: Profile[];
   folders?: Folder[];
   layout: LayoutNode | null;
+  settings?: Settings;
 }
 
 interface ProfileExport {
@@ -33,6 +43,7 @@ interface ProfileExport {
   version: number;
   folders: Folder[];
   profiles: Profile[];
+  settings?: Settings;
 }
 
 /** 舊版設定檔可能缺少後來新增的欄位，載入時補齊 */
@@ -49,6 +60,34 @@ function normalizeProfile(p: Partial<Profile>): Profile {
   };
 }
 
+/** 濾掉缺少必要欄位（壞掉/不明來源）的資料夾，避免渲染時炸掉 */
+function normalizeFolders(raw: unknown): Folder[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (f): f is Folder =>
+      !!f && typeof f.id === "string" && typeof f.name === "string",
+  );
+}
+
+/** 遞迴檢查版面結構是否完整；只要有一節點壞掉就整棵樹放棄，回上一個乾淨狀態 */
+function isValidLayout(node: unknown): node is LayoutNode {
+  if (!node || typeof node !== "object") return false;
+  const n = node as Record<string, unknown>;
+  if (n.type === "pane") {
+    return typeof n.id === "string" && !!n.spec && typeof n.spec === "object";
+  }
+  if (n.type === "split") {
+    return (
+      typeof n.id === "string" &&
+      (n.direction === "horizontal" || n.direction === "vertical") &&
+      Array.isArray(n.children) &&
+      n.children.every(isValidLayout) &&
+      Array.isArray(n.sizes)
+    );
+  }
+  return false;
+}
+
 export interface AppState {
   ready: boolean;
   shells: ShellInfo[];
@@ -57,8 +96,10 @@ export interface AppState {
   folders: Folder[];
   layout: LayoutNode | null;
   focusedPaneId: string | null;
+  settings: Settings;
 
   init(): Promise<void>;
+  updateSettings(s: Partial<Settings>): void;
   addProfile(p: Omit<Profile, "id">): void;
   updateProfile(p: Profile): void;
   removeProfile(id: string): void;
@@ -92,9 +133,14 @@ let saveTimer: ReturnType<typeof setTimeout> | undefined;
 function schedulePersist() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    const { profiles, folders, layout } = useAppStore.getState();
+    const { profiles, folders, layout, settings } = useAppStore.getState();
     void persistStore
-      .set("state", { profiles, folders, layout } satisfies PersistedState)
+      .set("state", {
+        profiles,
+        folders,
+        layout,
+        settings,
+      } satisfies PersistedState)
       .then(() => persistStore.save());
   }, 500);
 }
@@ -107,23 +153,47 @@ export const useAppStore = create<AppState>((set, get) => ({
   folders: [],
   layout: null,
   focusedPaneId: null,
+  settings: { fontFamily: DEFAULT_FONT_FAMILY, fontSize: DEFAULT_FONT_SIZE },
 
   async init() {
     if (get().ready) return;
     const [shells, homeDir, persisted] = await Promise.all([
       invoke<ShellInfo[]>("detect_shells"),
       invoke<string>("home_dir"),
-      persistStore.get<PersistedState>("state"),
+      persistStore.get<PersistedState>("state").catch((err) => {
+        // 設定檔損毀或格式不相容（例如舊版升級後讀不動）：
+        // 視為沒有存檔，讓 app 照預設值正常開啟，而不是卡住或整包噴錯
+        console.error("讀取設定檔失敗，改用預設值", err);
+        return undefined;
+      }),
     ]);
-    const layout = persisted?.layout ?? null;
+    const layout = isValidLayout(persisted?.layout) ? persisted!.layout : null;
+    const fontFamily = persisted?.settings?.fontFamily || DEFAULT_FONT_FAMILY;
+    const fontSize = persisted?.settings?.fontSize || DEFAULT_FONT_SIZE;
+    const { applyFontFamily, applyFontSize } = await import("@/lib/terminals");
+    applyFontFamily(fontFamily);
+    applyFontSize(fontSize);
     set({
       ready: true,
       shells,
       homeDir,
-      profiles: (persisted?.profiles ?? []).map(normalizeProfile),
-      folders: persisted?.folders ?? [],
+      profiles: Array.isArray(persisted?.profiles)
+        ? persisted.profiles.map(normalizeProfile)
+        : [],
+      folders: normalizeFolders(persisted?.folders),
       layout,
       focusedPaneId: collectPanes(layout)[0]?.id ?? null,
+      settings: { fontFamily, fontSize },
+    });
+  },
+
+  updateSettings(s) {
+    set((prev) => ({ settings: { ...prev.settings, ...s } }));
+    schedulePersist();
+    void import("@/lib/terminals").then(({ applyFontFamily, applyFontSize }) => {
+      const { fontFamily, fontSize } = get().settings;
+      applyFontFamily(fontFamily);
+      applyFontSize(fontSize);
     });
   },
 
@@ -225,13 +295,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   async exportProfiles() {
-    const { profiles, folders } = get();
+    const { profiles, folders, settings } = get();
     const path = await save({
       defaultPath: "termo-profiles.json",
       filters: [{ name: "JSON", extensions: ["json"] }],
     });
     if (!path) return false;
-    const data: ProfileExport = { app: "termo", version: 1, folders, profiles };
+    const data: ProfileExport = {
+      app: "termo",
+      version: 2,
+      folders,
+      profiles,
+      settings,
+    };
     await invoke("write_text_file", {
       path,
       contents: JSON.stringify(data, null, 2),
@@ -275,6 +351,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       folders: [...s.folders, ...remappedFolders],
       profiles: [...s.profiles, ...profiles],
     }));
+    if (data.settings?.fontFamily || data.settings?.fontSize) {
+      get().updateSettings(data.settings);
+    }
     schedulePersist();
     return profiles.length;
   },

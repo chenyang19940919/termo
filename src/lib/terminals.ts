@@ -34,6 +34,20 @@ function ensureExitListener() {
   });
 }
 
+/** 有選取文字就複製，否則貼上剪貼簿內容——Ctrl+C/V 與右鍵共用同一套邏輯 */
+function copyOrPaste(id: string) {
+  const term = handles.get(id)?.term;
+  if (!term) return;
+  if (term.hasSelection()) {
+    void navigator.clipboard.writeText(term.getSelection());
+    term.clearSelection();
+  } else {
+    void navigator.clipboard.readText().then((text) => {
+      if (text) term.paste(text);
+    });
+  }
+}
+
 function handleKey(id: string, ev: KeyboardEvent): boolean {
   if (ev.type !== "keydown") return true;
   const run = (fn: (s: import("@/store/app").AppState) => void) => {
@@ -49,7 +63,42 @@ function handleKey(id: string, ev: KeyboardEvent): boolean {
   if (ev.ctrlKey && ev.shiftKey && ev.code === "KeyW") {
     return run((s) => s.closePane(id));
   }
+  if (ev.ctrlKey && !ev.shiftKey && !ev.altKey && ev.code === "KeyC") {
+    const term = handles.get(id)?.term;
+    if (term?.hasSelection()) {
+      void navigator.clipboard.writeText(term.getSelection());
+      term.clearSelection();
+      return false;
+    }
+    return true;
+  }
+  if (ev.ctrlKey && !ev.shiftKey && !ev.altKey && ev.code === "KeyV") {
+    const term = handles.get(id)?.term;
+    void navigator.clipboard.readText().then((text) => {
+      if (text) term?.paste(text);
+    });
+    return false;
+  }
   return true;
+}
+
+let currentFontFamily: string | undefined;
+let currentFontSize: number | undefined;
+
+export function applyFontFamily(fontFamily: string) {
+  currentFontFamily = fontFamily;
+  for (const h of handles.values()) {
+    h.term.options.fontFamily = fontFamily;
+    if (h.opened) h.fit.fit();
+  }
+}
+
+export function applyFontSize(fontSize: number) {
+  currentFontSize = fontSize;
+  for (const h of handles.values()) {
+    h.term.options.fontSize = fontSize;
+    if (h.opened) h.fit.fit();
+  }
 }
 
 export function attachTerminal(id: string, spec: PaneSpec, host: HTMLElement) {
@@ -60,8 +109,10 @@ export function attachTerminal(id: string, spec: PaneSpec, host: HTMLElement) {
     container.style.width = "100%";
     container.style.height = "100%";
     const term = new Terminal({
-      fontFamily: '"Cascadia Mono", Consolas, "Courier New", monospace',
-      fontSize: 14,
+      fontFamily:
+        currentFontFamily ??
+        '"Cascadia Mono", Consolas, "Courier New", monospace',
+      fontSize: currentFontSize ?? 14,
       cursorBlink: true,
       scrollback: 5000,
       theme: {
@@ -77,6 +128,10 @@ export function attachTerminal(id: string, spec: PaneSpec, host: HTMLElement) {
       void invoke("write_pty", { id, data });
     });
     term.attachCustomKeyEventHandler((ev) => handleKey(id, ev));
+    container.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      copyOrPaste(id);
+    });
     h = { term, fit, container, opened: false, spawned: false, cols: 0, rows: 0 };
     handles.set(id, h);
   }

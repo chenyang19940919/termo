@@ -8,6 +8,7 @@ import {
   FolderPlus,
   Pencil,
   Plus,
+  Settings,
   SquareTerminal,
   Terminal as TerminalIcon,
   Trash2,
@@ -25,6 +26,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { ProfileDialog } from "@/components/ProfileDialog";
+import { SettingsDialog } from "@/components/SettingsDialog";
 import { useAppStore } from "@/store/app";
 import { cn } from "@/lib/utils";
 import type { Folder, Profile, ShellInfo } from "@/types";
@@ -315,6 +317,7 @@ export function Sidebar() {
     null,
   );
   const [folderName, setFolderName] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   function openShell(s: ShellInfo) {
     useAppStore.getState().openPane({
@@ -341,6 +344,16 @@ export function Sidebar() {
       <div className="flex h-10 items-center gap-2 px-3">
         <SquareTerminal className="size-4" />
         <span className="text-sm font-semibold tracking-wide">Termo</span>
+        <div className="flex-1" />
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-6"
+          title="設定"
+          onClick={() => setSettingsOpen(true)}
+        >
+          <Settings className="size-4" />
+        </Button>
       </div>
       <Separator />
 
@@ -458,6 +471,8 @@ export function Sidebar() {
         initial={editing}
         defaultFolderId={defaultFolderId}
       />
+
+      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
 
       <Dialog
         open={folderDialog !== null}
