@@ -15,6 +15,7 @@
   "build": {
     "appId": "com.termo.app",
     "productName": "Termo",
+    "npmRebuild": false,
     "directories": {
       "output": "dist-electron"
     },
