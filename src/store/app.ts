@@ -1,7 +1,5 @@
 import { create } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
-import { LazyStore } from "@tauri-apps/plugin-store";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { getBackend } from "@/lib/backend";
 import type {
   Direction,
   Folder,
@@ -19,8 +17,6 @@ import {
   splitPane,
 } from "@/lib/layout";
 import { disposeTerminal } from "@/lib/terminals";
-
-const persistStore = new LazyStore("termo-config.json");
 
 const DEFAULT_FONT_FAMILY =
   '"Cascadia Mono", Consolas, "Courier New", monospace';
@@ -134,14 +130,14 @@ function schedulePersist() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     const { profiles, folders, layout, settings } = useAppStore.getState();
-    void persistStore
-      .set("state", {
+    void getBackend().then((b) =>
+      b.persist({
         profiles,
         folders,
         layout,
         settings,
-      } satisfies PersistedState)
-      .then(() => persistStore.save());
+      } satisfies PersistedState),
+    );
   }, 500);
 }
 
@@ -157,10 +153,11 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async init() {
     if (get().ready) return;
+    const backend = await getBackend();
     const [shells, homeDir, persisted] = await Promise.all([
-      invoke<ShellInfo[]>("detect_shells"),
-      invoke<string>("home_dir"),
-      persistStore.get<PersistedState>("state").catch((err) => {
+      backend.detectShells(),
+      backend.homeDir(),
+      backend.loadPersisted<PersistedState>().catch((err) => {
         // 設定檔損毀或格式不相容（例如舊版升級後讀不動）：
         // 視為沒有存檔，讓 app 照預設值正常開啟，而不是卡住或整包噴錯
         console.error("讀取設定檔失敗，改用預設值", err);
@@ -296,7 +293,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async exportProfiles() {
     const { profiles, folders, settings } = get();
-    const path = await save({
+    const backend = await getBackend();
+    const path = await backend.saveDialog({
       defaultPath: "termo-profiles.json",
       filters: [{ name: "JSON", extensions: ["json"] }],
     });
@@ -308,20 +306,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       profiles,
       settings,
     };
-    await invoke("write_text_file", {
-      path,
-      contents: JSON.stringify(data, null, 2),
-    });
+    await backend.writeTextFile(path, JSON.stringify(data, null, 2));
     return true;
   },
 
   async importProfiles() {
-    const path = await open({
-      multiple: false,
+    const backend = await getBackend();
+    const path = await backend.openDialog({
       filters: [{ name: "JSON", extensions: ["json"] }],
     });
     if (typeof path !== "string") return 0;
-    const raw = await invoke<string>("read_text_file", { path });
+    const raw = await backend.readTextFile(path);
     let data: ProfileExport;
     try {
       data = JSON.parse(raw);

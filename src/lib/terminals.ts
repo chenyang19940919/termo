@@ -1,7 +1,6 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { Channel, invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { getBackend } from "@/lib/backend";
 import type { PaneSpec } from "@/types";
 
 /**
@@ -25,11 +24,12 @@ let exitListenerStarted = false;
 function ensureExitListener() {
   if (exitListenerStarted) return;
   exitListenerStarted = true;
-  void listen<string>("pty-exit", (e) => {
-    const id = e.payload;
-    if (!handles.has(id)) return; // 已由 closePane 主動清掉
-    void import("@/store/app").then(({ useAppStore }) => {
-      useAppStore.getState().closePane(id);
+  void getBackend().then((backend) => {
+    backend.onPtyExit((id) => {
+      if (!handles.has(id)) return; // 已由 closePane 主動清掉
+      void import("@/store/app").then(({ useAppStore }) => {
+        useAppStore.getState().closePane(id);
+      });
     });
   });
 }
@@ -125,7 +125,7 @@ export function attachTerminal(id: string, spec: PaneSpec, host: HTMLElement) {
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.onData((data) => {
-      void invoke("write_pty", { id, data });
+      void getBackend().then((b) => b.writePty(id, data));
     });
     term.attachCustomKeyEventHandler((ev) => handleKey(id, ev));
     container.addEventListener("contextmenu", (ev) => {
@@ -148,24 +148,23 @@ export function attachTerminal(id: string, spec: PaneSpec, host: HTMLElement) {
   if (!h.spawned) {
     h.spawned = true;
     const handle = h;
-    const onData = new Channel<ArrayBuffer>();
-    onData.onmessage = (msg) => {
-      if (typeof msg === "string") handle.term.write(msg);
-      else handle.term.write(new Uint8Array(msg));
-    };
     handle.cols = handle.term.cols;
     handle.rows = handle.term.rows;
-    void invoke("spawn_pty", {
-      id,
-      shell: spec.shellPath,
-      args: spec.args,
-      cwd: spec.cwd || null,
-      cols: handle.term.cols || 80,
-      rows: handle.term.rows || 24,
-      onData,
-    }).catch((err) => {
-      handle.term.write(`\r\n\x1b[31m無法啟動 shell：${err}\x1b[0m\r\n`);
-    });
+    void getBackend()
+      .then((b) =>
+        b.spawnPty({
+          id,
+          shell: spec.shellPath,
+          args: spec.args,
+          cwd: spec.cwd || null,
+          cols: handle.term.cols || 80,
+          rows: handle.term.rows || 24,
+          onData: (data) => handle.term.write(data),
+        }),
+      )
+      .catch((err) => {
+        handle.term.write(`\r\n\x1b[31m無法啟動 shell：${err}\x1b[0m\r\n`);
+      });
   }
 }
 
@@ -185,7 +184,7 @@ export function fitTerminal(id: string) {
   if (h.spawned && cols > 0 && rows > 0 && (cols !== h.cols || rows !== h.rows)) {
     h.cols = cols;
     h.rows = rows;
-    void invoke("resize_pty", { id, cols, rows });
+    void getBackend().then((b) => b.resizePty(id, cols, rows));
   }
 }
 
@@ -197,7 +196,7 @@ export function disposeTerminal(id: string) {
   const h = handles.get(id);
   if (!h) return;
   handles.delete(id);
-  void invoke("kill_pty", { id });
+  void getBackend().then((b) => b.killPty(id));
   h.term.dispose();
   h.container.remove();
 }

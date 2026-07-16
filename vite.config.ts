@@ -10,6 +10,9 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(async () => ({
   plugins: [react(), tailwindcss()],
 
+  // Electron 打包後用 file:// 載入 dist，資源必須是相對路徑；Tauri/dev server 不受影響
+  base: "./",
+
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),

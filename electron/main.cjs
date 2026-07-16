@@ -1,0 +1,197 @@
+// Electron 主程序：與 src-tauri 平行的第二個桌面外殼。
+// 前端經由 preload.cjs 的 termoBridge 呼叫這裡的 IPC handlers，
+// 功能面向對齊 src-tauri/src/pty.rs 與 fsio.rs。
+const {
+  app,
+  BrowserWindow,
+  ipcMain,
+  dialog,
+  shell: electronShell,
+} = require("electron");
+const path = require("node:path");
+const fs = require("node:fs");
+const fsp = require("node:fs/promises");
+const os = require("node:os");
+const pty = require("node-pty");
+
+/** @type {Map<string, import("node-pty").IPty>} */
+const sessions = new Map();
+
+/** 與 Tauri 版共用同一份設定檔（tauri-plugin-store 的 JSON 格式：{ "state": {...} }） */
+function configPath() {
+  return path.join(app.getPath("appData"), "com.termo.app", "termo-config.json");
+}
+
+function findInPath(exe) {
+  const dirs = (process.env.PATH || "").split(path.delimiter);
+  for (const dir of dirs) {
+    if (!dir) continue;
+    const full = path.join(dir, exe);
+    try {
+      if (fs.statSync(full).isFile()) return full;
+    } catch {
+      /* not found in this dir */
+    }
+  }
+  return null;
+}
+
+// 與 pty.rs 的 detect_shells 保持同一份清單與順序
+function detectShells() {
+  const shells = [];
+  const pwsh = findInPath("pwsh.exe");
+  if (pwsh) shells.push({ name: "PowerShell 7", path: pwsh, args: ["-NoLogo"] });
+  const powershell = findInPath("powershell.exe");
+  if (powershell)
+    shells.push({ name: "Windows PowerShell", path: powershell, args: ["-NoLogo"] });
+  const cmd = findInPath("cmd.exe");
+  if (cmd) shells.push({ name: "命令提示字元", path: cmd, args: [] });
+  for (const candidate of [
+    "C:\\Program Files\\Git\\bin\\bash.exe",
+    "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
+  ]) {
+    try {
+      if (fs.statSync(candidate).isFile()) {
+        shells.push({ name: "Git Bash", path: candidate, args: ["-i", "-l"] });
+        break;
+      }
+    } catch {
+      /* not installed */
+    }
+  }
+  const wsl = findInPath("wsl.exe");
+  if (wsl) shells.push({ name: "WSL", path: wsl, args: [] });
+  return shells;
+}
+
+/** @type {BrowserWindow | null} */
+let mainWindow = null;
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    title: "Termo",
+    width: 1280,
+    height: 800,
+    minWidth: 640,
+    minHeight: 400,
+    icon: path.join(__dirname, "..", "src-tauri", "icons", "icon.ico"),
+    webPreferences: {
+      preload: path.join(__dirname, "preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  mainWindow.setMenuBarVisibility(false);
+
+  const devUrl = process.env.VITE_DEV_SERVER_URL;
+  if (devUrl) {
+    void mainWindow.loadURL(devUrl);
+  } else {
+    void mainWindow.loadFile(path.join(__dirname, "..", "dist", "index.html"));
+  }
+
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+  });
+}
+
+ipcMain.handle("pty:spawn", (_e, { id, shell, args, cwd, cols, rows }) => {
+  if (sessions.has(id)) return;
+  let dir = cwd && cwd.trim() ? cwd : os.homedir();
+  try {
+    if (!fs.statSync(dir).isDirectory()) dir = os.homedir();
+  } catch {
+    dir = os.homedir();
+  }
+  const proc = pty.spawn(shell, args, {
+    name: "xterm-256color",
+    cols: Math.max(cols || 80, 2),
+    rows: Math.max(rows || 24, 2),
+    cwd: dir,
+    env: process.env,
+    useConpty: true,
+  });
+  sessions.set(id, proc);
+  proc.onData((data) => {
+    mainWindow?.webContents.send("pty:data", { id, data });
+  });
+  proc.onExit(() => {
+    if (sessions.delete(id)) {
+      mainWindow?.webContents.send("pty:exit", id);
+    }
+  });
+});
+
+// 高頻鍵盤輸入走 on（fire-and-forget），避免每個按鍵一趟 round-trip
+ipcMain.on("pty:write", (_e, { id, data }) => {
+  sessions.get(id)?.write(data);
+});
+
+ipcMain.handle("pty:resize", (_e, { id, cols, rows }) => {
+  sessions.get(id)?.resize(Math.max(cols, 2), Math.max(rows, 2));
+});
+
+ipcMain.handle("pty:kill", (_e, id) => {
+  const proc = sessions.get(id);
+  if (proc) {
+    sessions.delete(id); // 先移除，onExit 就不會再發 pty:exit
+    proc.kill();
+  }
+});
+
+ipcMain.handle("shells:detect", () => detectShells());
+
+ipcMain.handle("home:dir", () => os.homedir());
+
+ipcMain.handle("config:load", async () => {
+  try {
+    const raw = await fsp.readFile(configPath(), "utf-8");
+    return JSON.parse(raw).state;
+  } catch {
+    return undefined;
+  }
+});
+
+ipcMain.handle("config:save", async (_e, state) => {
+  const file = configPath();
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  await fsp.writeFile(file, JSON.stringify({ state }), "utf-8");
+});
+
+ipcMain.handle("dialog:save", async (_e, opts) => {
+  const result = await dialog.showSaveDialog(mainWindow, {
+    defaultPath: opts?.defaultPath,
+    filters: opts?.filters,
+  });
+  return result.canceled ? null : result.filePath;
+});
+
+ipcMain.handle("dialog:open", async (_e, opts) => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ["openFile"],
+    filters: opts?.filters,
+  });
+  return result.canceled ? null : (result.filePaths[0] ?? null);
+});
+
+ipcMain.handle("fs:read", (_e, p) => fsp.readFile(p, "utf-8"));
+
+ipcMain.handle("fs:write", (_e, { path: p, contents }) =>
+  fsp.writeFile(p, contents, "utf-8"),
+);
+
+// 外部連結一律交給系統瀏覽器，不在殼內開新視窗
+app.on("web-contents-created", (_e, contents) => {
+  contents.setWindowOpenHandler(({ url }) => {
+    void electronShell.openExternal(url);
+    return { action: "deny" };
+  });
+});
+
+app.whenReady().then(createWindow);
+
+app.on("window-all-closed", () => {
+  for (const proc of sessions.values()) proc.kill();
+  sessions.clear();
+  app.quit();
+});
