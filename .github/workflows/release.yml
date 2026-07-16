@@ -33,3 +33,14 @@ jobs:
           releaseName: "Termo ${{ github.ref_name }}"
           releaseDraft: true
           prerelease: false
+
+      # Electron 版安裝檔：與 Tauri 版附在同一個 release
+      - name: Build Electron installer
+        run: |
+          npm run build
+          npx electron-builder --win nsis --publish never
+
+      - name: Upload Electron installer to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload ${{ github.ref_name }} (Get-ChildItem dist-electron/*.exe).FullName --clobber
