@@ -34,6 +34,27 @@ function ensureExitListener() {
   });
 }
 
+/**
+ * xterm 對 ConPTY 的軟換行回報有專屬處理（windowsPty 選項），沒設的話窄視窗打超過寬度的指令
+ * 換行資訊會遺失，resize 放大也救不回來、對照 VS Code 內建終端機才不會有這個問題。
+ * buildNumber >= 21376 xterm 才信任 ConPTY 正確回報換行，用真實 build number 而非硬編，
+ * 避免舊版 Windows（換行仍靠回退法回報）誤判成新版行為。
+ */
+let windowsPty: { backend: "conpty"; buildNumber: number } | undefined;
+let windowsPtyStarted = false;
+function ensureWindowsPty() {
+  if (windowsPtyStarted) return;
+  windowsPtyStarted = true;
+  void getBackend()
+    .then((b) => b.windowsBuild())
+    .then((buildNumber) => {
+      windowsPty = { backend: "conpty", buildNumber };
+      for (const h of handles.values()) {
+        h.term.options.windowsPty = windowsPty;
+      }
+    });
+}
+
 /** 有選取文字就複製，否則貼上剪貼簿內容——Ctrl+C/V 與右鍵共用同一套邏輯 */
 function copyOrPaste(id: string) {
   const term = handles.get(id)?.term;
@@ -103,6 +124,7 @@ export function applyFontSize(fontSize: number) {
 
 export function attachTerminal(id: string, spec: PaneSpec, host: HTMLElement) {
   ensureExitListener();
+  ensureWindowsPty();
   let h = handles.get(id);
   if (!h) {
     const container = document.createElement("div");
@@ -115,6 +137,7 @@ export function attachTerminal(id: string, spec: PaneSpec, host: HTMLElement) {
       fontSize: currentFontSize ?? 14,
       cursorBlink: true,
       scrollback: 5000,
+      windowsPty,
       theme: {
         background: "#09090b",
         foreground: "#e4e4e7",

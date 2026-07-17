@@ -1,6 +1,6 @@
 [package]
 name = "termo"
-version = "0.1.4"
+version = "0.1.5"
 description = "Split-pane terminal with path profiles"
 authors = ["you"]
 edition = "2021"

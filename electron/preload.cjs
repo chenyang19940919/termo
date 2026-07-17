@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld("termoBridge", {
   onPtyExit: (cb) => ipcRenderer.on("pty:exit", (_e, id) => cb(id)),
   detectShells: () => ipcRenderer.invoke("shells:detect"),
   homeDir: () => ipcRenderer.invoke("home:dir"),
+  windowsBuild: () => ipcRenderer.invoke("os:windows-build"),
   loadConfig: () => ipcRenderer.invoke("config:load"),
   saveConfig: (state) => ipcRenderer.invoke("config:save", state),
   saveDialog: (opts) => ipcRenderer.invoke("dialog:save", opts),

@@ -18,6 +18,7 @@ interface TermoBridge {
   onPtyExit(cb: (id: string) => void): void;
   detectShells(): Promise<ShellInfo[]>;
   homeDir(): Promise<string>;
+  windowsBuild(): Promise<number>;
   loadConfig(): Promise<unknown>;
   saveConfig(state: unknown): Promise<void>;
   saveDialog(opts: {
@@ -84,6 +85,10 @@ export function createElectronBackend(): Backend {
 
     homeDir() {
       return bridge.homeDir();
+    },
+
+    windowsBuild() {
+      return bridge.windowsBuild();
     },
 
     async loadPersisted<T>() {

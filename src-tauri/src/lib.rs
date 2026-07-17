@@ -15,6 +15,7 @@ pub fn run() {
             pty::kill_pty,
             pty::detect_shells,
             pty::home_dir,
+            pty::windows_build_number,
             fsio::write_text_file,
             fsio::read_text_file,
         ])

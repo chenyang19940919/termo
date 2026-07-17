@@ -50,6 +50,10 @@ export function createTauriBackend(): Backend {
       return invoke<string>("home_dir");
     },
 
+    windowsBuild() {
+      return invoke<number>("windows_build_number");
+    },
+
     async loadPersisted<T>() {
       return persistStore.get<T>("state");
     },

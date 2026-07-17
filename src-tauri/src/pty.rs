@@ -41,6 +41,30 @@ pub fn home_dir() -> String {
     std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\".into())
 }
 
+/// xterm.js 的 `windowsPty` 選項需要實際 build number 判斷 ConPTY 是否已修好換行回報
+/// （build >= 21376 才會正確標記軟換行，讓 resize 時 reflow 正常，行為對齊 VS Code 內建終端機）。
+/// 直接讀機碼而非 GetVersionEx，避免舊版 API 對未宣告相容性的程式回傳假造的版本號。
+#[tauri::command]
+pub fn windows_build_number() -> u32 {
+    std::process::Command::new("reg")
+        .args([
+            "query",
+            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+            "/v",
+            "CurrentBuildNumber",
+        ])
+        .output()
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.contains("CurrentBuildNumber"))
+                .and_then(|l| l.split_whitespace().last())
+                .and_then(|n| n.parse::<u32>().ok())
+        })
+        .unwrap_or(0)
+}
+
 #[tauri::command]
 pub fn detect_shells() -> Vec<ShellInfo> {
     let mut shells = Vec::new();

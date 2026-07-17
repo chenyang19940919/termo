@@ -29,6 +29,8 @@ export interface Backend {
   onPtyExit(cb: (id: string) => void): void;
   detectShells(): Promise<ShellInfo[]>;
   homeDir(): Promise<string>;
+  /** Windows build number，用來設定 xterm 的 windowsPty 選項（ConPTY 換行/resize 對齊 VS Code） */
+  windowsBuild(): Promise<number>;
   /** 讀取持久化的 app 狀態（設定檔的 "state" 鍵），檔案不存在或損毀時回 undefined */
   loadPersisted<T>(): Promise<T | undefined>;
   persist(state: unknown): Promise<void>;

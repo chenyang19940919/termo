@@ -147,6 +147,9 @@ ipcMain.handle("shells:detect", () => detectShells());
 
 ipcMain.handle("home:dir", () => os.homedir());
 
+// os.release() 在 Windows 上是 "10.0.<build>"，直接取 build number 給 xterm 的 windowsPty 選項用
+ipcMain.handle("os:windows-build", () => Number(os.release().split(".")[2]) || 0);
+
 ipcMain.handle("config:load", async () => {
   try {
     const raw = await fsp.readFile(configPath(), "utf-8");
