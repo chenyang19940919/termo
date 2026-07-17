@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { CSSProperties, DragEvent } from "react";
 import { SquareSplitHorizontal, SquareSplitVertical, X } from "lucide-react";
 import { useAppStore } from "@/store/app";
 import {
@@ -10,9 +11,41 @@ import {
 import { cn } from "@/lib/utils";
 import type { PaneNode } from "@/types";
 
+const PANE_DRAG_MIME = "application/x-termo-pane";
+
+type DropZone = "top" | "bottom" | "left" | "right";
+
+/** 依游標離哪個邊最近，決定要往哪個方向分割 */
+function computeDropZone(e: DragEvent<HTMLElement>): DropZone {
+  const r = e.currentTarget.getBoundingClientRect();
+  const x = e.clientX - r.left;
+  const y = e.clientY - r.top;
+  const candidates: [DropZone, number][] = [
+    ["top", y],
+    ["bottom", r.height - y],
+    ["left", x],
+    ["right", r.width - x],
+  ];
+  return candidates.reduce((a, b) => (b[1] < a[1] ? b : a))[0];
+}
+
+function dropZoneStyle(zone: DropZone): CSSProperties {
+  switch (zone) {
+    case "top":
+      return { top: 0, left: 0, right: 0, height: "50%" };
+    case "bottom":
+      return { bottom: 0, left: 0, right: 0, height: "50%" };
+    case "left":
+      return { top: 0, bottom: 0, left: 0, width: "50%" };
+    case "right":
+      return { top: 0, bottom: 0, right: 0, width: "50%" };
+  }
+}
+
 export function TerminalPane({ node }: { node: PaneNode }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const focused = useAppStore((s) => s.focusedPaneId === node.id);
+  const [dropZone, setDropZone] = useState<DropZone | null>(null);
 
   useEffect(() => {
     const host = hostRef.current!;
@@ -36,14 +69,43 @@ export function TerminalPane({ node }: { node: PaneNode }) {
   return (
     <div
       className={cn(
-        "flex h-full flex-col overflow-hidden bg-[#09090b]",
+        "relative flex h-full flex-col overflow-hidden bg-[#09090b]",
         focused && "ring-1 ring-ring/70 ring-inset",
       )}
       onMouseDown={() => useAppStore.getState().setFocused(node.id)}
+      onDragOver={(e) => {
+        if (!e.dataTransfer.types.includes(PANE_DRAG_MIME)) return;
+        e.preventDefault();
+        setDropZone(computeDropZone(e));
+      }}
+      onDragLeave={() => setDropZone(null)}
+      onDrop={(e) => {
+        if (!e.dataTransfer.types.includes(PANE_DRAG_MIME)) return;
+        e.preventDefault();
+        const zone = dropZone;
+        setDropZone(null);
+        const sourceId = e.dataTransfer.getData(PANE_DRAG_MIME);
+        if (!sourceId || sourceId === node.id || !zone) return;
+        const direction =
+          zone === "top" || zone === "bottom" ? "vertical" : "horizontal";
+        const position = zone === "top" || zone === "left" ? "before" : "after";
+        useAppStore.getState().movePane(sourceId, node.id, direction, position);
+      }}
     >
+      {dropZone && (
+        <div
+          className="pointer-events-none absolute z-10 border-2 border-ring bg-ring/25"
+          style={dropZoneStyle(dropZone)}
+        />
+      )}
       <div
+        draggable
+        onDragStart={(e) => {
+          e.dataTransfer.setData(PANE_DRAG_MIME, node.id);
+          e.dataTransfer.effectAllowed = "move";
+        }}
         className={cn(
-          "flex h-7 shrink-0 items-center gap-1.5 border-b border-border/60 px-2 text-xs",
+          "flex h-7 shrink-0 cursor-grab items-center gap-1.5 border-b border-border/60 px-2 text-xs active:cursor-grabbing",
           focused ? "text-foreground" : "text-muted-foreground",
         )}
         style={
@@ -62,7 +124,11 @@ export function TerminalPane({ node }: { node: PaneNode }) {
         <span className="truncate text-muted-foreground/70">
           {node.spec.cwd}
         </span>
-        <div className="ml-auto flex items-center gap-0.5">
+        <div
+          draggable={false}
+          className="ml-auto flex items-center gap-0.5"
+          onDragStart={(e) => e.stopPropagation()}
+        >
           <button
             title="向右分割 (Alt+Shift+D)"
             className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"

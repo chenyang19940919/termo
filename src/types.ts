@@ -24,6 +24,14 @@ export interface Folder {
   collapsed?: boolean;
 }
 
+/** 儲存的常用指令，跟 profile 無關——點了就送進目前 focus 的 terminal */
+export interface Command {
+  id: string;
+  name: string;
+  command: string;
+  folderId: string | null;
+}
+
 /** 一個 pane 開啟當下的設定快照，profile 之後被改或刪不影響已開啟的 pane */
 export interface PaneSpec {
   name: string;

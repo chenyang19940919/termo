@@ -13,6 +13,7 @@ const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const os = require("node:os");
 const pty = require("node-pty");
+const { autoUpdater } = require("electron-updater");
 
 /** @type {Map<string, import("node-pty").IPty>} */
 const sessions = new Map();
@@ -28,7 +29,10 @@ function findInPath(exe) {
     if (!dir) continue;
     const full = path.join(dir, exe);
     try {
-      if (fs.statSync(full).isFile()) return full;
+      // statSync 對 Windows Store 版的 App Execution Alias（例如 pwsh.exe）會回 EACCES，
+      // 只有 accessSync 抓得到這種只能透過 alias 執行、無法直接 stat 的安裝方式
+      fs.accessSync(full, fs.constants.X_OK);
+      return full;
     } catch {
       /* not found in this dir */
     }
@@ -188,7 +192,34 @@ app.on("web-contents-created", (_e, contents) => {
   });
 });
 
-app.whenReady().then(createWindow);
+// GitHub release 是 draft 時 electron-updater 抓不到，要等手動 publish release 後才會生效
+autoUpdater.on("error", (err) => {
+  console.error("[updater] error:", err);
+});
+
+autoUpdater.on("update-downloaded", (info) => {
+  dialog
+    .showMessageBox(mainWindow, {
+      type: "info",
+      buttons: ["立即重啟安裝", "下次啟動再裝"],
+      defaultId: 0,
+      cancelId: 1,
+      title: "Termo 更新",
+      message: `已下載新版本 ${info.version}，是否立即重啟安裝？`,
+    })
+    .then(({ response }) => {
+      if (response === 0) autoUpdater.quitAndInstall();
+    });
+});
+
+app.whenReady().then(() => {
+  createWindow();
+  if (app.isPackaged) {
+    autoUpdater.checkForUpdates().catch((err) => {
+      console.error("[updater] check failed:", err);
+    });
+  }
+});
 
 app.on("window-all-closed", () => {
   for (const proc of sessions.values()) proc.kill();

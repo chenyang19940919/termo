@@ -13,6 +13,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # electron-builder 用 v${package.json version} 算 release tag 去掛同一個 release；
+      # 兩邊 version 沒對齊的話它會另開一個新 release，Electron 安裝檔跟 latest.yml 就會跟 Tauri 版分家
+      - name: Verify tag matches package.json / tauri.conf.json version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}" -replace '^v', ''
+          $pkgVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tauriVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ($tag -ne $pkgVersion -or $tag -ne $tauriVersion) {
+            Write-Error "Version mismatch: tag=$tag package.json=$pkgVersion tauri.conf.json=$tauriVersion"
+            exit 1
+          }
+          Write-Host "Version check passed: $tag"
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -35,12 +49,10 @@ jobs:
           prerelease: false
 
       # Electron 版安裝檔：與 Tauri 版附在同一個 release
-      - name: Build Electron installer
-        run: |
-          npm run build
-          npx electron-builder --win nsis --publish never
-
-      - name: Upload Electron installer to release
+      # --publish always 會連 latest.yml（electron-updater 自動更新用的 metadata）一起上傳到同一個 tag 的 release
+      - name: Build and publish Electron installer
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload ${{ github.ref_name }} (Get-ChildItem dist-electron/*.exe).FullName --clobber
+        run: |
+          npm run build
+          npx electron-builder --win nsis --publish always

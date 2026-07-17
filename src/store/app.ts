@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { getBackend } from "@/lib/backend";
 import type {
+  Command,
   Direction,
   Folder,
   LayoutNode,
@@ -12,11 +13,12 @@ import type {
 import {
   collectPanes,
   genId,
+  relocatePane,
   removePane,
   setSplitSizes,
   splitPane,
 } from "@/lib/layout";
-import { disposeTerminal } from "@/lib/terminals";
+import { disposeTerminal, sendToTerminal } from "@/lib/terminals";
 
 const DEFAULT_FONT_FAMILY =
   '"Cascadia Mono", Consolas, "Courier New", monospace';
@@ -30,6 +32,8 @@ export interface Settings {
 interface PersistedState {
   profiles: Profile[];
   folders?: Folder[];
+  commands?: Command[];
+  commandFolders?: Folder[];
   layout: LayoutNode | null;
   settings?: Settings;
 }
@@ -39,6 +43,8 @@ interface ProfileExport {
   version: number;
   folders: Folder[];
   profiles: Profile[];
+  commands?: Command[];
+  commandFolders?: Folder[];
   settings?: Settings;
 }
 
@@ -62,6 +68,18 @@ function normalizeFolders(raw: unknown): Folder[] {
   return raw.filter(
     (f): f is Folder =>
       !!f && typeof f.id === "string" && typeof f.name === "string",
+  );
+}
+
+/** 濾掉缺少必要欄位的指令，避免渲染時炸掉 */
+function normalizeCommands(raw: unknown): Command[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (c): c is Command =>
+      !!c &&
+      typeof c.id === "string" &&
+      typeof c.name === "string" &&
+      typeof c.command === "string",
   );
 }
 
@@ -90,6 +108,8 @@ export interface AppState {
   homeDir: string;
   profiles: Profile[];
   folders: Folder[];
+  commands: Command[];
+  commandFolders: Folder[];
   layout: LayoutNode | null;
   focusedPaneId: string | null;
   settings: Settings;
@@ -115,11 +135,37 @@ export interface AppState {
   renameFolder(id: string, name: string): void;
   removeFolder(id: string): void;
   toggleFolder(id: string): void;
+  addCommand(name: string, command: string, folderId: string | null): void;
+  updateCommand(c: Command): void;
+  removeCommand(id: string): void;
+  moveCommand(
+    id: string,
+    folderId: string | null,
+    anchorId?: string | null,
+    position?: "before" | "after",
+  ): void;
+  addCommandFolder(name: string, parentId: string | null): void;
+  moveCommandFolder(
+    id: string,
+    parentId: string | null,
+    anchorId?: string | null,
+    position?: "before" | "after",
+  ): void;
+  renameCommandFolder(id: string, name: string): void;
+  removeCommandFolder(id: string): void;
+  toggleCommandFolder(id: string): void;
+  runCommand(id: string): void;
   exportProfiles(): Promise<boolean>;
   importProfiles(): Promise<number>;
   openPane(spec: PaneSpec): void;
   openDefaultPane(): void;
   splitPane(paneId: string, direction: Direction): void;
+  movePane(
+    sourceId: string,
+    targetId: string,
+    direction: Direction,
+    position: "before" | "after",
+  ): void;
   closePane(paneId: string): void;
   setFocused(paneId: string): void;
   setSizes(splitId: string, sizes: number[]): void;
@@ -129,11 +175,14 @@ let saveTimer: ReturnType<typeof setTimeout> | undefined;
 function schedulePersist() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    const { profiles, folders, layout, settings } = useAppStore.getState();
+    const { profiles, folders, commands, commandFolders, layout, settings } =
+      useAppStore.getState();
     void getBackend().then((b) =>
       b.persist({
         profiles,
         folders,
+        commands,
+        commandFolders,
         layout,
         settings,
       } satisfies PersistedState),
@@ -147,6 +196,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   homeDir: "",
   profiles: [],
   folders: [],
+  commands: [],
+  commandFolders: [],
   layout: null,
   focusedPaneId: null,
   settings: { fontFamily: DEFAULT_FONT_FAMILY, fontSize: DEFAULT_FONT_SIZE },
@@ -178,6 +229,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         ? persisted.profiles.map(normalizeProfile)
         : [],
       folders: normalizeFolders(persisted?.folders),
+      commands: normalizeCommands(persisted?.commands),
+      commandFolders: normalizeFolders(persisted?.commandFolders),
       layout,
       focusedPaneId: collectPanes(layout)[0]?.id ?? null,
       settings: { fontFamily, fontSize },
@@ -291,8 +344,117 @@ export const useAppStore = create<AppState>((set, get) => ({
     schedulePersist();
   },
 
+  addCommand(name, command, folderId) {
+    set((s) => ({
+      commands: [...s.commands, { id: genId(), name, command, folderId }],
+    }));
+    schedulePersist();
+  },
+
+  updateCommand(c) {
+    set((s) => ({
+      commands: s.commands.map((x) => (x.id === c.id ? c : x)),
+    }));
+    schedulePersist();
+  },
+
+  removeCommand(id) {
+    set((s) => ({ commands: s.commands.filter((c) => c.id !== id) }));
+    schedulePersist();
+  },
+
+  moveCommand(id, folderId, anchorId = null, position = "before") {
+    set((s) => {
+      const dragged = s.commands.find((c) => c.id === id);
+      if (!dragged) return s;
+      const rest = s.commands.filter((c) => c.id !== id);
+      const updated = { ...dragged, folderId };
+      const idx = anchorId ? rest.findIndex((c) => c.id === anchorId) : -1;
+      if (idx === -1) {
+        rest.push(updated);
+      } else {
+        rest.splice(position === "after" ? idx + 1 : idx, 0, updated);
+      }
+      return { commands: rest };
+    });
+    schedulePersist();
+  },
+
+  addCommandFolder(name, parentId) {
+    set((s) => ({
+      commandFolders: [...s.commandFolders, { id: genId(), name, parentId }],
+    }));
+    schedulePersist();
+  },
+
+  moveCommandFolder(id, parentId, anchorId = null, position = "before") {
+    set((s) => {
+      const dragged = s.commandFolders.find((f) => f.id === id);
+      if (!dragged) return s;
+      // 防循環：不能把資料夾移到自己或自己的子孫底下
+      let cursor = parentId;
+      while (cursor) {
+        if (cursor === id) return s;
+        cursor = s.commandFolders.find((f) => f.id === cursor)?.parentId ?? null;
+      }
+      const rest = s.commandFolders.filter((f) => f.id !== id);
+      const updated = { ...dragged, parentId };
+      const idx = anchorId ? rest.findIndex((f) => f.id === anchorId) : -1;
+      if (idx === -1) {
+        rest.push(updated);
+      } else {
+        rest.splice(position === "after" ? idx + 1 : idx, 0, updated);
+      }
+      return { commandFolders: rest };
+    });
+    schedulePersist();
+  },
+
+  renameCommandFolder(id, name) {
+    set((s) => ({
+      commandFolders: s.commandFolders.map((f) =>
+        f.id === id ? { ...f, name } : f,
+      ),
+    }));
+    schedulePersist();
+  },
+
+  removeCommandFolder(id) {
+    // 刪除資料夾時，裡面的指令與子資料夾移到上一層，不連帶刪除
+    set((s) => {
+      const target = s.commandFolders.find((f) => f.id === id);
+      const parentId = target?.parentId ?? null;
+      return {
+        commandFolders: s.commandFolders
+          .filter((f) => f.id !== id)
+          .map((f) => (f.parentId === id ? { ...f, parentId } : f)),
+        commands: s.commands.map((c) =>
+          c.folderId === id ? { ...c, folderId: parentId } : c,
+        ),
+      };
+    });
+    schedulePersist();
+  },
+
+  toggleCommandFolder(id) {
+    set((s) => ({
+      commandFolders: s.commandFolders.map((f) =>
+        f.id === id ? { ...f, collapsed: !f.collapsed } : f,
+      ),
+    }));
+    schedulePersist();
+  },
+
+  runCommand(id) {
+    const { commands, focusedPaneId } = get();
+    if (!focusedPaneId) return;
+    const cmd = commands.find((c) => c.id === id);
+    if (!cmd) return;
+    sendToTerminal(focusedPaneId, cmd.command + "\r");
+  },
+
   async exportProfiles() {
-    const { profiles, folders, settings } = get();
+    const { profiles, folders, commands, commandFolders, settings } = get();
     const backend = await getBackend();
     const path = await backend.saveDialog({
       defaultPath: "termo-profiles.json",
@@ -301,9 +463,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!path) return false;
     const data: ProfileExport = {
       app: "termo",
-      version: 2,
+      version: 3,
       folders,
       profiles,
+      commands,
+      commandFolders,
       settings,
     };
     await backend.writeTextFile(path, JSON.stringify(data, null, 2));
@@ -342,15 +506,33 @@ export const useAppStore = create<AppState>((set, get) => ({
       folderId: p.folderId ? (folderIdMap.get(p.folderId) ?? null) : null,
     }));
 
+    const commandFolderIdMap = new Map<string, string>();
+    const commandFolders = (data.commandFolders ?? []).map((f) => {
+      const id = genId();
+      commandFolderIdMap.set(f.id, id);
+      return { ...f, id };
+    });
+    const remappedCommandFolders = commandFolders.map((f) => ({
+      ...f,
+      parentId: f.parentId ? (commandFolderIdMap.get(f.parentId) ?? null) : null,
+    }));
+    const commands = normalizeCommands(data.commands).map((c) => ({
+      ...c,
+      id: genId(),
+      folderId: c.folderId ? (commandFolderIdMap.get(c.folderId) ?? null) : null,
+    }));
+
     set((s) => ({
       folders: [...s.folders, ...remappedFolders],
       profiles: [...s.profiles, ...profiles],
+      commandFolders: [...s.commandFolders, ...remappedCommandFolders],
+      commands: [...s.commands, ...commands],
     }));
     if (data.settings?.fontFamily || data.settings?.fontSize) {
       get().updateSettings(data.settings);
     }
     schedulePersist();
-    return profiles.length;
+    return profiles.length + commands.length;
   },
 
   openPane(spec) {
@@ -390,6 +572,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       layout: splitPane(s.layout, paneId, direction, pane),
       focusedPaneId: pane.id,
     });
+    schedulePersist();
+  },
+
+  movePane(sourceId, targetId, direction, position) {
+    const s = get();
+    if (!s.layout || sourceId === targetId) return;
+    set({ layout: relocatePane(s.layout, sourceId, targetId, direction, position) });
     schedulePersist();
   },
 

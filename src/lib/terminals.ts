@@ -192,6 +192,11 @@ export function focusTerminal(id: string) {
   handles.get(id)?.term.focus();
 }
 
+/** 把文字直接送進某個 pane 的 pty，用來執行已儲存的常用指令 */
+export function sendToTerminal(id: string, data: string) {
+  void getBackend().then((b) => b.writePty(id, data));
+}
+
 export function disposeTerminal(id: string) {
   const h = handles.get(id);
   if (!h) return;

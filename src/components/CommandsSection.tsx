@@ -3,20 +3,17 @@ import type { DragEvent } from "react";
 import {
   ChevronDown,
   ChevronRight,
-  Download,
+  Copy,
   Folder as FolderIcon,
   FolderPlus,
   Pencil,
+  Play,
   Plus,
-  Settings,
   SquareTerminal,
-  Terminal as TerminalIcon,
   Trash2,
-  Upload,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
 import {
   Dialog,
   DialogContent,
@@ -25,27 +22,15 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { ProfileDialog } from "@/components/ProfileDialog";
-import { CommandsSection } from "@/components/CommandsSection";
-import { SettingsDialog } from "@/components/SettingsDialog";
+import { CommandDialog } from "@/components/CommandDialog";
 import { useAppStore } from "@/store/app";
 import { cn } from "@/lib/utils";
-import type { Folder, Profile, ShellInfo } from "@/types";
+import type { Command, Folder } from "@/types";
 
-const DRAG_MIME = "application/x-termo-profile";
-const FOLDER_MIME = "application/x-termo-folder";
+const DRAG_MIME = "application/x-termo-command";
+const FOLDER_MIME = "application/x-termo-command-folder";
 
-function openProfile(p: Profile) {
-  useAppStore.getState().openPane({
-    name: p.name,
-    shellPath: p.shellPath,
-    args: p.args,
-    cwd: p.cwd,
-    color: p.color,
-  });
-}
-
-function isProfileDrag(e: DragEvent) {
+function isCommandDrag(e: DragEvent) {
   return e.dataTransfer.types.includes(DRAG_MIME);
 }
 
@@ -53,14 +38,42 @@ function isFolderDrag(e: DragEvent) {
   return e.dataTransfer.types.includes(FOLDER_MIME);
 }
 
+function runCommand(c: Command) {
+  useAppStore.getState().runCommand(c.id);
+}
+
 interface RowActionsProps {
+  runDisabled: boolean;
+  onRun(): void;
+  onCopy(): void;
   onEdit(): void;
   onDelete(): void;
 }
 
-function RowActions({ onEdit, onDelete }: RowActionsProps) {
+function RowActions({ runDisabled, onRun, onCopy, onEdit, onDelete }: RowActionsProps) {
   return (
     <>
+      <button
+        title={runDisabled ? "沒有 focus 的 terminal 可以執行" : "在目前 terminal 執行"}
+        disabled={runDisabled}
+        className="rounded p-1 text-muted-foreground hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+        onClick={(e) => {
+          e.stopPropagation();
+          onRun();
+        }}
+      >
+        <Play className="size-3" />
+      </button>
+      <button
+        title="複製指令"
+        className="rounded p-1 text-muted-foreground hover:text-foreground"
+        onClick={(e) => {
+          e.stopPropagation();
+          onCopy();
+        }}
+      >
+        <Copy className="size-3" />
+      </button>
       <button
         title="編輯"
         className="rounded p-1 text-muted-foreground hover:text-foreground"
@@ -85,19 +98,20 @@ function RowActions({ onEdit, onDelete }: RowActionsProps) {
   );
 }
 
-interface ProfileRowProps {
-  profile: Profile;
+interface CommandRowProps {
+  command: Command;
   indent: React.CSSProperties;
   onEdit(): void;
 }
 
-function ProfileRow({ profile: p, indent, onEdit }: ProfileRowProps) {
+function CommandRow({ command: c, indent, onEdit }: CommandRowProps) {
   const [dropPos, setDropPos] = useState<"before" | "after" | null>(null);
+  const focusedPaneId = useAppStore((s) => s.focusedPaneId);
 
   return (
     <div
       draggable
-      title="雙擊開啟"
+      title={c.command}
       className="group flex cursor-pointer items-center gap-2 rounded-md py-1.5 pr-2 hover:bg-accent"
       style={{
         ...indent,
@@ -108,13 +122,13 @@ function ProfileRow({ profile: p, indent, onEdit }: ProfileRowProps) {
               ? "inset 0 -2px 0 0 var(--ring)"
               : undefined,
       }}
-      onDoubleClick={() => openProfile(p)}
+      onDoubleClick={() => runCommand(c)}
       onDragStart={(e) => {
-        e.dataTransfer.setData(DRAG_MIME, p.id);
+        e.dataTransfer.setData(DRAG_MIME, c.id);
         e.dataTransfer.effectAllowed = "move";
       }}
       onDragOver={(e) => {
-        if (!isProfileDrag(e)) return;
+        if (!isCommandDrag(e)) return;
         e.preventDefault();
         e.stopPropagation();
         const r = e.currentTarget.getBoundingClientRect();
@@ -127,25 +141,25 @@ function ProfileRow({ profile: p, indent, onEdit }: ProfileRowProps) {
         const id = e.dataTransfer.getData(DRAG_MIME);
         const pos = dropPos ?? "before";
         setDropPos(null);
-        if (id && id !== p.id) {
-          useAppStore.getState().moveProfile(id, p.folderId, p.id, pos);
+        if (id && id !== c.id) {
+          useAppStore.getState().moveCommand(id, c.folderId, c.id, pos);
         }
       }}
     >
-      <SquareTerminal
-        className={cn("size-4 shrink-0", !p.color && "text-muted-foreground")}
-        style={p.color ? { color: p.color } : undefined}
-      />
+      <SquareTerminal className="size-4 shrink-0 text-muted-foreground" />
       <div className="pointer-events-none min-w-0 flex-1">
-        <div className="truncate text-sm">{p.name}</div>
+        <div className="truncate text-sm">{c.name}</div>
         <div className="truncate text-[11px] text-muted-foreground/70">
-          {p.cwd || p.shellName}
+          {c.command}
         </div>
       </div>
       <div className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
         <RowActions
+          runDisabled={!focusedPaneId}
+          onRun={() => runCommand(c)}
+          onCopy={() => void navigator.clipboard.writeText(c.command)}
           onEdit={onEdit}
-          onDelete={() => useAppStore.getState().removeProfile(p.id)}
+          onDelete={() => useAppStore.getState().removeCommand(c.id)}
         />
       </div>
     </div>
@@ -161,7 +175,12 @@ interface FolderRowProps {
 
 type FolderDropZone = "before" | "into" | "after" | null;
 
-function FolderRow({ folder: f, indent, onRename, onAddInFolder }: FolderRowProps) {
+function CommandFolderRow({
+  folder: f,
+  indent,
+  onRename,
+  onAddInFolder,
+}: FolderRowProps) {
   const [dropZone, setDropZone] = useState<FolderDropZone>(null);
 
   return (
@@ -180,18 +199,18 @@ function FolderRow({ folder: f, indent, onRename, onAddInFolder }: FolderRowProp
               ? "inset 0 -2px 0 0 var(--ring)"
               : undefined,
       }}
-      onClick={() => useAppStore.getState().toggleFolder(f.id)}
+      onClick={() => useAppStore.getState().toggleCommandFolder(f.id)}
       onDragStart={(e) => {
         e.dataTransfer.setData(FOLDER_MIME, f.id);
         e.dataTransfer.effectAllowed = "move";
       }}
       onDragOver={(e) => {
-        const profile = isProfileDrag(e);
+        const command = isCommandDrag(e);
         const folder = isFolderDrag(e);
-        if (!profile && !folder) return;
+        if (!command && !folder) return;
         e.preventDefault();
         e.stopPropagation();
-        if (profile) {
+        if (command) {
           setDropZone("into");
           return;
         }
@@ -206,17 +225,19 @@ function FolderRow({ folder: f, indent, onRename, onAddInFolder }: FolderRowProp
         e.stopPropagation();
         const zone = dropZone ?? "into";
         setDropZone(null);
-        const profileId = e.dataTransfer.getData(DRAG_MIME);
-        if (profileId) {
-          useAppStore.getState().moveProfile(profileId, f.id);
+        const commandId = e.dataTransfer.getData(DRAG_MIME);
+        if (commandId) {
+          useAppStore.getState().moveCommand(commandId, f.id);
           return;
         }
         const folderId = e.dataTransfer.getData(FOLDER_MIME);
         if (!folderId || folderId === f.id) return;
         if (zone === "into") {
-          useAppStore.getState().moveFolder(folderId, f.id);
+          useAppStore.getState().moveCommandFolder(folderId, f.id);
         } else {
-          useAppStore.getState().moveFolder(folderId, f.parentId, f.id, zone);
+          useAppStore
+            .getState()
+            .moveCommandFolder(folderId, f.parentId, f.id, zone);
         }
       }}
     >
@@ -229,7 +250,7 @@ function FolderRow({ folder: f, indent, onRename, onAddInFolder }: FolderRowProp
       <span className="min-w-0 flex-1 truncate text-sm">{f.name}</span>
       <div className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
         <button
-          title="在此資料夾新增設定檔"
+          title="在此資料夾新增指令"
           className="rounded p-1 text-muted-foreground hover:text-foreground"
           onClick={(e) => {
             e.stopPropagation();
@@ -238,10 +259,26 @@ function FolderRow({ folder: f, indent, onRename, onAddInFolder }: FolderRowProp
         >
           <Plus className="size-3" />
         </button>
-        <RowActions
-          onEdit={onRename}
-          onDelete={() => useAppStore.getState().removeFolder(f.id)}
-        />
+        <button
+          title="重新命名"
+          className="rounded p-1 text-muted-foreground hover:text-foreground"
+          onClick={(e) => {
+            e.stopPropagation();
+            onRename();
+          }}
+        >
+          <Pencil className="size-3" />
+        </button>
+        <button
+          title="刪除"
+          className="rounded p-1 text-muted-foreground hover:text-destructive"
+          onClick={(e) => {
+            e.stopPropagation();
+            useAppStore.getState().removeCommandFolder(f.id);
+          }}
+        >
+          <Trash2 className="size-3" />
+        </button>
       </div>
     </div>
   );
@@ -250,52 +287,52 @@ function FolderRow({ folder: f, indent, onRename, onAddInFolder }: FolderRowProp
 interface TreeProps {
   parentId: string | null;
   depth: number;
-  onEditProfile(p: Profile): void;
+  onEditCommand(c: Command): void;
   onRenameFolder(f: Folder): void;
   onAddInFolder(folderId: string): void;
 }
 
-function ProfileTree({
+function CommandTree({
   parentId,
   depth,
-  onEditProfile,
+  onEditCommand,
   onRenameFolder,
   onAddInFolder,
 }: TreeProps) {
-  const folders = useAppStore((s) => s.folders);
-  const profiles = useAppStore((s) => s.profiles);
+  const folders = useAppStore((s) => s.commandFolders);
+  const commands = useAppStore((s) => s.commands);
 
   const childFolders = folders.filter((f) => f.parentId === parentId);
-  const childProfiles = profiles.filter((p) => p.folderId === parentId);
+  const childCommands = commands.filter((c) => c.folderId === parentId);
   const indent = { paddingLeft: `${8 + depth * 14}px` };
 
   return (
     <>
       {childFolders.map((f) => (
         <div key={f.id}>
-          <FolderRow
+          <CommandFolderRow
             folder={f}
             indent={indent}
             onRename={() => onRenameFolder(f)}
             onAddInFolder={() => onAddInFolder(f.id)}
           />
           {!f.collapsed && (
-            <ProfileTree
+            <CommandTree
               parentId={f.id}
               depth={depth + 1}
-              onEditProfile={onEditProfile}
+              onEditCommand={onEditCommand}
               onRenameFolder={onRenameFolder}
               onAddInFolder={onAddInFolder}
             />
           )}
         </div>
       ))}
-      {childProfiles.map((p) => (
-        <ProfileRow
-          key={p.id}
-          profile={p}
+      {childCommands.map((c) => (
+        <CommandRow
+          key={c.id}
+          command={c}
           indent={indent}
-          onEdit={() => onEditProfile(p)}
+          onEdit={() => onEditCommand(c)}
         />
       ))}
     </>
@@ -307,80 +344,36 @@ interface FolderDialogState {
   folder?: Folder;
 }
 
-export function Sidebar() {
-  const shells = useAppStore((s) => s.shells);
-  const homeDir = useAppStore((s) => s.homeDir);
+export function CommandsSection() {
+  const commands = useAppStore((s) => s.commands);
+  const commandFolders = useAppStore((s) => s.commandFolders);
 
-  const [profileDialogOpen, setProfileDialogOpen] = useState(false);
-  const [editing, setEditing] = useState<Profile | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editing, setEditing] = useState<Command | null>(null);
   const [defaultFolderId, setDefaultFolderId] = useState<string | null>(null);
   const [folderDialog, setFolderDialog] = useState<FolderDialogState | null>(
     null,
   );
   const [folderName, setFolderName] = useState("");
-  const [settingsOpen, setSettingsOpen] = useState(false);
-
-  function openShell(s: ShellInfo) {
-    useAppStore.getState().openPane({
-      name: s.name,
-      shellPath: s.path,
-      args: s.args,
-      cwd: homeDir,
-    });
-  }
 
   function submitFolderDialog() {
     const name = folderName.trim();
     if (!name || !folderDialog) return;
     if (folderDialog.mode === "add") {
-      useAppStore.getState().addFolder(name, null);
+      useAppStore.getState().addCommandFolder(name, null);
     } else if (folderDialog.folder) {
-      useAppStore.getState().renameFolder(folderDialog.folder.id, name);
+      useAppStore.getState().renameCommandFolder(folderDialog.folder.id, name);
     }
     setFolderDialog(null);
   }
 
   return (
-    <aside className="flex w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
-      <div className="flex h-10 items-center gap-2 px-3">
-        <SquareTerminal className="size-4" />
-        <span className="text-sm font-semibold tracking-wide">Termo</span>
-        <div className="flex-1" />
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-6"
-          title="設定"
-          onClick={() => setSettingsOpen(true)}
-        >
-          <Settings className="size-4" />
-        </Button>
-      </div>
-      <Separator />
-
+    <>
       <div className="flex items-center justify-between px-3 pt-3 pb-1">
         <span className="text-xs font-medium text-muted-foreground">
-          設定檔
+          常用指令
         </span>
         <div className="flex items-center">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-5"
-            title="匯入設定檔"
-            onClick={() => void useAppStore.getState().importProfiles()}
-          >
-            <Download className="size-3.5" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-5"
-            title="匯出設定檔"
-            onClick={() => void useAppStore.getState().exportProfiles()}
-          >
-            <Upload className="size-3.5" />
-          </Button>
           <Button
             variant="ghost"
             size="icon"
@@ -397,11 +390,11 @@ export function Sidebar() {
             variant="ghost"
             size="icon"
             className="size-5"
-            title="新增設定檔"
+            title="新增指令"
             onClick={() => {
               setEditing(null);
               setDefaultFolderId(null);
-              setProfileDialogOpen(true);
+              setDialogOpen(true);
             }}
           >
             <Plus className="size-3.5" />
@@ -412,26 +405,26 @@ export function Sidebar() {
       <ScrollArea
         className="min-h-0 flex-1"
         onDragOver={(e) => {
-          if (isProfileDrag(e) || isFolderDrag(e)) e.preventDefault();
+          if (isCommandDrag(e) || isFolderDrag(e)) e.preventDefault();
         }}
         onDrop={(e) => {
           e.preventDefault();
-          const profileId = e.dataTransfer.getData(DRAG_MIME);
-          if (profileId) {
-            useAppStore.getState().moveProfile(profileId, null);
+          const commandId = e.dataTransfer.getData(DRAG_MIME);
+          if (commandId) {
+            useAppStore.getState().moveCommand(commandId, null);
             return;
           }
           const folderId = e.dataTransfer.getData(FOLDER_MIME);
-          if (folderId) useAppStore.getState().moveFolder(folderId, null);
+          if (folderId) useAppStore.getState().moveCommandFolder(folderId, null);
         }}
       >
         <div className="flex flex-col gap-0.5 px-2 pb-2">
-          <ProfileTree
+          <CommandTree
             parentId={null}
             depth={0}
-            onEditProfile={(p) => {
-              setEditing(p);
-              setProfileDialogOpen(true);
+            onEditCommand={(c) => {
+              setEditing(c);
+              setDialogOpen(true);
             }}
             onRenameFolder={(f) => {
               setFolderName(f.name);
@@ -440,43 +433,24 @@ export function Sidebar() {
             onAddInFolder={(folderId) => {
               setEditing(null);
               setDefaultFolderId(folderId);
-              setProfileDialogOpen(true);
+              setDialogOpen(true);
             }}
           />
-          <EmptyHint />
+          {commands.length === 0 && commandFolders.length === 0 && (
+            <p className="px-1 py-2 text-xs text-muted-foreground/70">
+              還沒有常用指令。按右上角 + 新增，雙擊或按執行鈕會送進目前 focus 的
+              terminal。
+            </p>
+          )}
         </div>
       </ScrollArea>
 
-      <Separator />
-      <CommandsSection />
-
-      <Separator />
-      <div className="px-3 pt-2 pb-1">
-        <span className="text-xs font-medium text-muted-foreground">
-          快速開啟
-        </span>
-      </div>
-      <div className="flex flex-col gap-0.5 px-2 pb-3">
-        {shells.map((s) => (
-          <button
-            key={s.path}
-            className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent"
-            onClick={() => openShell(s)}
-          >
-            <TerminalIcon className="size-4 shrink-0 text-muted-foreground" />
-            <span className="truncate">{s.name}</span>
-          </button>
-        ))}
-      </div>
-
-      <ProfileDialog
-        open={profileDialogOpen}
-        onOpenChange={setProfileDialogOpen}
+      <CommandDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
         initial={editing}
         defaultFolderId={defaultFolderId}
       />
-
-      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
 
       <Dialog
         open={folderDialog !== null}
@@ -505,17 +479,6 @@ export function Sidebar() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </aside>
-  );
-}
-
-function EmptyHint() {
-  const profiles = useAppStore((s) => s.profiles);
-  const folders = useAppStore((s) => s.folders);
-  if (profiles.length > 0 || folders.length > 0) return null;
-  return (
-    <p className="px-1 py-2 text-xs text-muted-foreground/70">
-      還沒有設定檔。按右上角 + 新增，設定名稱、shell、起始路徑與顏色。雙擊設定檔開啟 terminal。
-    </p>
+    </>
   );
 }
