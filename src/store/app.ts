@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { ITheme } from "@xterm/xterm";
 import { getBackend } from "@/lib/backend";
 import type {
   Command,
@@ -9,6 +10,7 @@ import type {
   PaneSpec,
   Profile,
   ShellInfo,
+  Workspace,
 } from "@/types";
 import {
   collectPanes,
@@ -18,15 +20,34 @@ import {
   setSplitSizes,
   splitPane,
 } from "@/lib/layout";
-import { disposeTerminal, sendToTerminal } from "@/lib/terminals";
+import { disposeTerminal, sendToTerminal, setBroadcastMode } from "@/lib/terminals";
 
 const DEFAULT_FONT_FAMILY =
   '"Cascadia Mono", Consolas, "Courier New", monospace';
 const DEFAULT_FONT_SIZE = 14;
+const DEFAULT_THEME: ITheme = {
+  background: "#09090b",
+  foreground: "#e4e4e7",
+  cursor: "#e4e4e7",
+  selectionBackground: "#3f3f46",
+};
+const DEFAULT_SCROLLBACK = 5000;
 
 export interface Settings {
   fontFamily: string;
   fontSize: number;
+  theme: ITheme;
+  scrollback: number;
+}
+
+/** 舊版設定檔可能沒有 theme/scrollback 欄位，載入時補齊 */
+function normalizeSettings(s: Partial<Settings> | undefined): Settings {
+  return {
+    fontFamily: s?.fontFamily || DEFAULT_FONT_FAMILY,
+    fontSize: s?.fontSize || DEFAULT_FONT_SIZE,
+    theme: { ...DEFAULT_THEME, ...s?.theme },
+    scrollback: s?.scrollback || DEFAULT_SCROLLBACK,
+  };
 }
 
 interface PersistedState {
@@ -34,7 +55,10 @@ interface PersistedState {
   folders?: Folder[];
   commands?: Command[];
   commandFolders?: Folder[];
-  layout: LayoutNode | null;
+  /** 舊格式（v3 以前）單一版面樹，只在遷移時讀，之後一律用 workspaces */
+  layout?: LayoutNode | null;
+  workspaces?: unknown;
+  activeWorkspaceId?: string | null;
   settings?: Settings;
 }
 
@@ -102,6 +126,49 @@ function isValidLayout(node: unknown): node is LayoutNode {
   return false;
 }
 
+/**
+ * 載入分頁清單；v4 以前的設定檔沒有分頁概念，只有單一 layout——
+ * 遷移時把它包成第一個分頁，讓舊使用者升級後版面不會消失。
+ */
+function normalizeWorkspaces(persisted: PersistedState | undefined): {
+  workspaces: Workspace[];
+  activeWorkspaceId: string;
+} {
+  const raw = persisted?.workspaces;
+  if (Array.isArray(raw)) {
+    const workspaces = raw
+      .filter(
+        (w): w is { id: string; name: string; layout: unknown } =>
+          !!w && typeof w.id === "string" && typeof w.name === "string",
+      )
+      .map((w): Workspace => {
+        const layout = isValidLayout(w.layout) ? w.layout : null;
+        return {
+          id: w.id,
+          name: w.name,
+          layout,
+          focusedPaneId: collectPanes(layout)[0]?.id ?? null,
+        };
+      });
+    if (workspaces.length > 0) {
+      const activeWorkspaceId =
+        typeof persisted?.activeWorkspaceId === "string" &&
+        workspaces.some((w) => w.id === persisted.activeWorkspaceId)
+          ? persisted.activeWorkspaceId
+          : workspaces[0].id;
+      return { workspaces, activeWorkspaceId };
+    }
+  }
+  const layout = isValidLayout(persisted?.layout) ? persisted!.layout : null;
+  const id = genId();
+  return {
+    workspaces: [
+      { id, name: "分頁 1", layout, focusedPaneId: collectPanes(layout)[0]?.id ?? null },
+    ],
+    activeWorkspaceId: id,
+  };
+}
+
 export interface AppState {
   ready: boolean;
   shells: ShellInfo[];
@@ -110,12 +177,18 @@ export interface AppState {
   folders: Folder[];
   commands: Command[];
   commandFolders: Folder[];
+  workspaces: Workspace[];
+  activeWorkspaceId: string | null;
   layout: LayoutNode | null;
   focusedPaneId: string | null;
+  maximizedPaneId: string | null;
+  searchPaneId: string | null;
+  broadcastMode: boolean;
   settings: Settings;
 
   init(): Promise<void>;
   updateSettings(s: Partial<Settings>): void;
+  resetSettings(): void;
   addProfile(p: Omit<Profile, "id">): void;
   updateProfile(p: Profile): void;
   removeProfile(id: string): void;
@@ -169,13 +242,21 @@ export interface AppState {
   closePane(paneId: string): void;
   setFocused(paneId: string): void;
   setSizes(splitId: string, sizes: number[]): void;
+  toggleMaximize(paneId: string): void;
+  openSearch(paneId: string): void;
+  closeSearch(): void;
+  toggleBroadcast(): void;
+  addWorkspace(): void;
+  closeWorkspace(id: string): void;
+  switchWorkspace(id: string): void;
+  renameWorkspace(id: string, name: string): void;
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 function schedulePersist() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    const { profiles, folders, commands, commandFolders, layout, settings } =
+    const { profiles, folders, commands, commandFolders, workspaces, activeWorkspaceId, settings } =
       useAppStore.getState();
     void getBackend().then((b) =>
       b.persist({
@@ -183,11 +264,43 @@ function schedulePersist() {
         folders,
         commands,
         commandFolders,
-        layout,
+        // focusedPaneId 是執行期狀態，不用存
+        workspaces: workspaces.map(({ id, name, layout }) => ({ id, name, layout })),
+        activeWorkspaceId,
         settings,
       } satisfies PersistedState),
     );
   }, 500);
+}
+
+type PanePatch = Partial<
+  Pick<AppState, "layout" | "focusedPaneId" | "maximizedPaneId" | "searchPaneId">
+>;
+
+/**
+ * 版面類動作（開/關/搬移 pane）統一走這裡：除了更新頂層 layout/focusedPaneId
+ * （既有元件都是讀這兩個欄位），同時把結果鏡射進目前分頁在 workspaces 裡的紀錄，
+ * 這樣切分頁時才能還原到正確版面。
+ */
+function setPane(patch: PanePatch | ((s: AppState) => PanePatch)) {
+  useAppStore.setState((s) => {
+    const p = typeof patch === "function" ? patch(s) : patch;
+    const touchesLayout = "layout" in p || "focusedPaneId" in p;
+    const workspaces =
+      touchesLayout && s.activeWorkspaceId
+        ? s.workspaces.map((w) =>
+            w.id === s.activeWorkspaceId
+              ? {
+                  ...w,
+                  layout: "layout" in p ? (p.layout ?? null) : w.layout,
+                  focusedPaneId:
+                    "focusedPaneId" in p ? (p.focusedPaneId ?? null) : w.focusedPaneId,
+                }
+              : w,
+          )
+        : s.workspaces;
+    return { ...p, workspaces };
+  });
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -198,9 +311,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   folders: [],
   commands: [],
   commandFolders: [],
+  workspaces: [],
+  activeWorkspaceId: null,
   layout: null,
   focusedPaneId: null,
-  settings: { fontFamily: DEFAULT_FONT_FAMILY, fontSize: DEFAULT_FONT_SIZE },
+  maximizedPaneId: null,
+  searchPaneId: null,
+  broadcastMode: false,
+  settings: normalizeSettings(undefined),
 
   async init() {
     if (get().ready) return;
@@ -215,12 +333,15 @@ export const useAppStore = create<AppState>((set, get) => ({
         return undefined;
       }),
     ]);
-    const layout = isValidLayout(persisted?.layout) ? persisted!.layout : null;
-    const fontFamily = persisted?.settings?.fontFamily || DEFAULT_FONT_FAMILY;
-    const fontSize = persisted?.settings?.fontSize || DEFAULT_FONT_SIZE;
-    const { applyFontFamily, applyFontSize } = await import("@/lib/terminals");
-    applyFontFamily(fontFamily);
-    applyFontSize(fontSize);
+    const { workspaces, activeWorkspaceId } = normalizeWorkspaces(persisted);
+    const active = workspaces.find((w) => w.id === activeWorkspaceId)!;
+    const settings = normalizeSettings(persisted?.settings);
+    const { applyFontFamily, applyFontSize, applyTheme, applyScrollback } =
+      await import("@/lib/terminals");
+    applyFontFamily(settings.fontFamily);
+    applyFontSize(settings.fontSize);
+    applyTheme(settings.theme);
+    applyScrollback(settings.scrollback);
     set({
       ready: true,
       shells,
@@ -231,20 +352,30 @@ export const useAppStore = create<AppState>((set, get) => ({
       folders: normalizeFolders(persisted?.folders),
       commands: normalizeCommands(persisted?.commands),
       commandFolders: normalizeFolders(persisted?.commandFolders),
-      layout,
-      focusedPaneId: collectPanes(layout)[0]?.id ?? null,
-      settings: { fontFamily, fontSize },
+      workspaces,
+      activeWorkspaceId,
+      layout: active.layout,
+      focusedPaneId: active.focusedPaneId,
+      settings,
     });
   },
 
   updateSettings(s) {
     set((prev) => ({ settings: { ...prev.settings, ...s } }));
     schedulePersist();
-    void import("@/lib/terminals").then(({ applyFontFamily, applyFontSize }) => {
-      const { fontFamily, fontSize } = get().settings;
-      applyFontFamily(fontFamily);
-      applyFontSize(fontSize);
-    });
+    void import("@/lib/terminals").then(
+      ({ applyFontFamily, applyFontSize, applyTheme, applyScrollback }) => {
+        const { fontFamily, fontSize, theme, scrollback } = get().settings;
+        applyFontFamily(fontFamily);
+        applyFontSize(fontSize);
+        applyTheme(theme);
+        applyScrollback(scrollback);
+      },
+    );
+  },
+
+  resetSettings() {
+    get().updateSettings(normalizeSettings(undefined));
   },
 
   addProfile(p) {
@@ -528,7 +659,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       commandFolders: [...s.commandFolders, ...remappedCommandFolders],
       commands: [...s.commands, ...commands],
     }));
-    if (data.settings?.fontFamily || data.settings?.fontSize) {
+    if (data.settings) {
       get().updateSettings(data.settings);
     }
     schedulePersist();
@@ -537,7 +668,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   openPane(spec) {
     const pane: PaneNode = { type: "pane", id: genId(), spec };
-    set((s) => {
+    setPane((s) => {
       if (!s.layout) return { layout: pane, focusedPaneId: pane.id };
       const target =
         s.focusedPaneId ?? collectPanes(s.layout)[0]?.id ?? null;
@@ -568,9 +699,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     const source = collectPanes(s.layout).find((p) => p.id === paneId);
     if (!source) return;
     const pane: PaneNode = { type: "pane", id: genId(), spec: { ...source.spec } };
-    set({
+    setPane({
       layout: splitPane(s.layout, paneId, direction, pane),
       focusedPaneId: pane.id,
+      // 分割後版面改變了，還鎖在單一 pane 全螢幕裡看不到新 pane，直接還原
+      maximizedPaneId: null,
     });
     schedulePersist();
   },
@@ -578,32 +711,128 @@ export const useAppStore = create<AppState>((set, get) => ({
   movePane(sourceId, targetId, direction, position) {
     const s = get();
     if (!s.layout || sourceId === targetId) return;
-    set({ layout: relocatePane(s.layout, sourceId, targetId, direction, position) });
+    setPane({ layout: relocatePane(s.layout, sourceId, targetId, direction, position) });
     schedulePersist();
   },
 
   closePane(paneId) {
     disposeTerminal(paneId);
-    set((s) => {
-      if (!s.layout) return s;
+    setPane((s) => {
+      if (!s.layout) return {};
       const layout = removePane(s.layout, paneId);
       const focusedPaneId =
         s.focusedPaneId === paneId
           ? (collectPanes(layout)[0]?.id ?? null)
           : s.focusedPaneId;
-      return { layout, focusedPaneId };
+      const maximizedPaneId =
+        s.maximizedPaneId === paneId ? null : s.maximizedPaneId;
+      const searchPaneId = s.searchPaneId === paneId ? null : s.searchPaneId;
+      return { layout, focusedPaneId, maximizedPaneId, searchPaneId };
     });
     schedulePersist();
   },
 
   setFocused(paneId) {
-    if (get().focusedPaneId !== paneId) set({ focusedPaneId: paneId });
+    if (get().focusedPaneId !== paneId) setPane({ focusedPaneId: paneId });
   },
 
   setSizes(splitId, sizes) {
     const s = get();
     if (!s.layout) return;
-    set({ layout: setSplitSizes(s.layout, splitId, sizes) });
+    setPane({ layout: setSplitSizes(s.layout, splitId, sizes) });
+    schedulePersist();
+  },
+
+  toggleMaximize(paneId) {
+    set((s) => ({ maximizedPaneId: s.maximizedPaneId === paneId ? null : paneId }));
+  },
+
+  openSearch(paneId) {
+    set({ searchPaneId: paneId, focusedPaneId: paneId });
+  },
+
+  closeSearch() {
+    const { searchPaneId } = get();
+    if (searchPaneId) {
+      void import("@/lib/terminals").then(({ clearSearch, focusTerminal }) => {
+        clearSearch(searchPaneId);
+        focusTerminal(searchPaneId);
+      });
+    }
+    set({ searchPaneId: null });
+  },
+
+  toggleBroadcast() {
+    const enabled = !get().broadcastMode;
+    setBroadcastMode(enabled);
+    set({ broadcastMode: enabled });
+  },
+
+  addWorkspace() {
+    const ws: Workspace = {
+      id: genId(),
+      name: `分頁 ${get().workspaces.length + 1}`,
+      layout: null,
+      focusedPaneId: null,
+    };
+    set((s) => ({
+      workspaces: [...s.workspaces, ws],
+      activeWorkspaceId: ws.id,
+      layout: null,
+      focusedPaneId: null,
+      maximizedPaneId: null,
+      searchPaneId: null,
+    }));
+    schedulePersist();
+  },
+
+  switchWorkspace(id) {
+    const s = get();
+    if (s.activeWorkspaceId === id) return;
+    const target = s.workspaces.find((w) => w.id === id);
+    if (!target) return;
+    set({
+      activeWorkspaceId: id,
+      layout: target.layout,
+      focusedPaneId: target.focusedPaneId,
+      maximizedPaneId: null,
+      searchPaneId: null,
+    });
+  },
+
+  closeWorkspace(id) {
+    const s = get();
+    const idx = s.workspaces.findIndex((w) => w.id === id);
+    if (idx === -1) return;
+    // 分頁裡開著的 terminal 一併真正結束掉，不留殭屍 pty
+    for (const pane of collectPanes(s.workspaces[idx].layout)) {
+      disposeTerminal(pane.id);
+    }
+    let remaining = s.workspaces.filter((w) => w.id !== id);
+    let activeWorkspaceId = s.activeWorkspaceId;
+    if (remaining.length === 0) {
+      const fresh: Workspace = { id: genId(), name: "分頁 1", layout: null, focusedPaneId: null };
+      remaining = [fresh];
+      activeWorkspaceId = fresh.id;
+    } else if (s.activeWorkspaceId === id) {
+      activeWorkspaceId = (s.workspaces[idx - 1] ?? s.workspaces[idx + 1]).id;
+    }
+    const active = remaining.find((w) => w.id === activeWorkspaceId) ?? remaining[0];
+    set({
+      workspaces: remaining,
+      activeWorkspaceId: active.id,
+      layout: active.layout,
+      focusedPaneId: active.focusedPaneId,
+      maximizedPaneId: null,
+      searchPaneId: null,
+    });
+    schedulePersist();
+  },
+
+  renameWorkspace(id, name) {
+    set((s) => ({
+      workspaces: s.workspaces.map((w) => (w.id === id ? { ...w, name } : w)),
+    }));
     schedulePersist();
   },
 }));

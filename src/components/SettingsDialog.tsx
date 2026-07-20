@@ -16,25 +16,65 @@ interface Props {
   onOpenChange(open: boolean): void;
 }
 
+function ColorField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange(v: string): void;
+}) {
+  return (
+    <label className="flex items-center gap-2 rounded-md border border-input px-2 py-1.5 text-sm">
+      <input
+        type="color"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="size-5 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
+      />
+      <span className="text-muted-foreground">{label}</span>
+    </label>
+  );
+}
+
 export function SettingsDialog({ open, onOpenChange }: Props) {
   const settings = useAppStore((s) => s.settings);
   const [fontFamily, setFontFamily] = useState("");
   const [fontSize, setFontSize] = useState("");
+  const [background, setBackground] = useState("#09090b");
+  const [foreground, setForeground] = useState("#e4e4e7");
+  const [cursorColor, setCursorColor] = useState("#e4e4e7");
+  const [selectionBackground, setSelectionBackground] = useState("#3f3f46");
+  const [scrollback, setScrollback] = useState("");
 
   useEffect(() => {
     if (open) {
       setFontFamily(settings.fontFamily);
       setFontSize(String(settings.fontSize));
+      setBackground(settings.theme.background ?? "#09090b");
+      setForeground(settings.theme.foreground ?? "#e4e4e7");
+      setCursorColor(settings.theme.cursor ?? "#e4e4e7");
+      setSelectionBackground(settings.theme.selectionBackground ?? "#3f3f46");
+      setScrollback(String(settings.scrollback));
     }
   }, [open, settings]);
 
   function save() {
     const family = fontFamily.trim();
     const size = Number(fontSize);
-    if (family) useAppStore.getState().updateSettings({ fontFamily: family });
-    if (Number.isFinite(size) && size > 0) {
-      useAppStore.getState().updateSettings({ fontSize: size });
-    }
+    const lines = Number(scrollback);
+    useAppStore.getState().updateSettings({
+      ...(family && { fontFamily: family }),
+      ...(Number.isFinite(size) && size > 0 && { fontSize: size }),
+      ...(Number.isFinite(lines) && lines >= 0 && { scrollback: lines }),
+      theme: {
+        background,
+        foreground,
+        cursor: cursorColor,
+        selectionBackground,
+      },
+    });
     onOpenChange(false);
   }
 
@@ -70,8 +110,39 @@ export function SettingsDialog({ open, onOpenChange }: Props) {
               onKeyDown={(e) => e.key === "Enter" && save()}
             />
           </div>
+          <div className="grid gap-2">
+            <Label htmlFor="settings-scrollback">Scrollback 行數</Label>
+            <Input
+              id="settings-scrollback"
+              type="number"
+              min={0}
+              value={scrollback}
+              onChange={(e) => setScrollback(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && save()}
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label>終端機配色</Label>
+            <div className="grid grid-cols-2 gap-2">
+              <ColorField label="背景" value={background} onChange={setBackground} />
+              <ColorField label="文字" value={foreground} onChange={setForeground} />
+              <ColorField label="游標" value={cursorColor} onChange={setCursorColor} />
+              <ColorField
+                label="選取範圍"
+                value={selectionBackground}
+                onChange={setSelectionBackground}
+              />
+            </div>
+          </div>
         </div>
         <DialogFooter>
+          <Button
+            variant="ghost"
+            className="mr-auto text-muted-foreground"
+            onClick={() => useAppStore.getState().resetSettings()}
+          >
+            重設為預設值
+          </Button>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             取消
           </Button>

@@ -3,7 +3,10 @@ import { SquareTerminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sidebar } from "@/components/Sidebar";
 import { LayoutRenderer } from "@/components/LayoutRenderer";
+import { TerminalPane } from "@/components/TerminalPane";
+import { WorkspaceTabs } from "@/components/WorkspaceTabs";
 import { useAppStore } from "@/store/app";
+import { collectPanes } from "@/lib/layout";
 
 function EmptyState() {
   return (
@@ -20,6 +23,7 @@ function EmptyState() {
 export default function App() {
   const ready = useAppStore((s) => s.ready);
   const layout = useAppStore((s) => s.layout);
+  const maximizedPaneId = useAppStore((s) => s.maximizedPaneId);
 
   useEffect(() => {
     void useAppStore.getState().init();
@@ -33,11 +37,25 @@ export default function App() {
     );
   }
 
+  const maximizedNode =
+    maximizedPaneId && layout
+      ? (collectPanes(layout).find((p) => p.id === maximizedPaneId) ?? null)
+      : null;
+
   return (
     <div className="flex h-full">
       <Sidebar />
-      <main className="min-w-0 flex-1">
-        {layout ? <LayoutRenderer node={layout} /> : <EmptyState />}
+      <main className="flex min-w-0 flex-1 flex-col">
+        <WorkspaceTabs />
+        <div className="min-h-0 flex-1">
+          {!layout ? (
+            <EmptyState />
+          ) : maximizedNode ? (
+            <TerminalPane node={maximizedNode} />
+          ) : (
+            <LayoutRenderer node={layout} />
+          )}
+        </div>
       </main>
     </div>
   );

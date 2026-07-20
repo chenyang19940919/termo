@@ -6,6 +6,7 @@ const {
   BrowserWindow,
   ipcMain,
   dialog,
+  globalShortcut,
   shell: electronShell,
 } = require("electron");
 const path = require("node:path");
@@ -97,6 +98,19 @@ function createWindow() {
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
+}
+
+// Quake 主控台風格的全域喚醒鍵：視窗有焦點就隱藏，否則顯示並搶焦點
+// （最小化或被其他視窗蓋住都算「沒有焦點」，一律用 show()+focus() 拉到最前面）
+function toggleWindowVisibility() {
+  if (!mainWindow) return;
+  if (mainWindow.isFocused()) {
+    mainWindow.hide();
+  } else {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  }
 }
 
 ipcMain.handle("pty:spawn", (_e, { id, shell, args, cwd, cols, rows }) => {
@@ -222,6 +236,13 @@ app.whenReady().then(() => {
       console.error("[updater] check failed:", err);
     });
   }
+  if (!globalShortcut.register("Control+Alt+T", toggleWindowVisibility)) {
+    console.error("[hotkey] Ctrl+Alt+T 註冊失敗，可能被其他程式占用");
+  }
+});
+
+app.on("will-quit", () => {
+  globalShortcut.unregisterAll();
 });
 
 app.on("window-all-closed", () => {

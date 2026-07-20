@@ -1,16 +1,20 @@
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { SearchAddon, type ISearchResultChangeEvent } from "@xterm/addon-search";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { getBackend } from "@/lib/backend";
 import type { PaneSpec } from "@/types";
 
 /**
- * xterm 實例與 DOM 容器活在 React 生命週期之外。
+ * xterm 實例與 DOM 容器活在 React 之外。
  * React 重新掛載（分割、調整版面）時只是把 container 重新 append，
  * buffer 與 PTY session 都保留；只有 closePane 才真正銷毀。
  */
 interface TermHandle {
   term: Terminal;
   fit: FitAddon;
+  search: SearchAddon;
   container: HTMLDivElement;
   opened: boolean;
   spawned: boolean;
@@ -84,6 +88,13 @@ function handleKey(id: string, ev: KeyboardEvent): boolean {
   if (ev.ctrlKey && ev.shiftKey && ev.code === "KeyW") {
     return run((s) => s.closePane(id));
   }
+  if (ev.ctrlKey && ev.shiftKey && ev.code === "KeyM") {
+    return run((s) => s.toggleMaximize(id));
+  }
+  if (ev.ctrlKey && !ev.shiftKey && !ev.altKey && ev.code === "KeyF") {
+    ev.preventDefault();
+    return run((s) => s.openSearch(id));
+  }
   if (ev.ctrlKey && !ev.shiftKey && !ev.altKey && ev.code === "KeyC") {
     const term = handles.get(id)?.term;
     if (term?.hasSelection()) {
@@ -94,6 +105,9 @@ function handleKey(id: string, ev: KeyboardEvent): boolean {
     return true;
   }
   if (ev.ctrlKey && !ev.shiftKey && !ev.altKey && ev.code === "KeyV") {
+    // 一定要 preventDefault：否則瀏覽器仍會對 xterm 內部的隱藏 textarea 觸發原生
+    // paste 事件，xterm 自己會再送一次進 pty，造成貼上內容重複兩次
+    ev.preventDefault();
     const term = handles.get(id)?.term;
     void navigator.clipboard.readText().then((text) => {
       if (text) term?.paste(text);
@@ -122,6 +136,38 @@ export function applyFontSize(fontSize: number) {
   }
 }
 
+const DEFAULT_THEME: ITheme = {
+  background: "#09090b",
+  foreground: "#e4e4e7",
+  cursor: "#e4e4e7",
+  selectionBackground: "#3f3f46",
+};
+const DEFAULT_SCROLLBACK = 5000;
+
+let currentTheme: ITheme = DEFAULT_THEME;
+let currentScrollback = DEFAULT_SCROLLBACK;
+
+export function applyTheme(theme: ITheme) {
+  currentTheme = theme;
+  for (const h of handles.values()) {
+    h.term.options.theme = theme;
+  }
+}
+
+export function applyScrollback(scrollback: number) {
+  currentScrollback = scrollback;
+  for (const h of handles.values()) {
+    h.term.options.scrollback = scrollback;
+  }
+}
+
+/** 開啟時就把輸入廣播給所有已啟動 pty，用來對多台機器同時打同一組指令 */
+let broadcastEnabled = false;
+
+export function setBroadcastMode(enabled: boolean) {
+  broadcastEnabled = enabled;
+}
+
 export function attachTerminal(id: string, spec: PaneSpec, host: HTMLElement) {
   ensureExitListener();
   ensureWindowsPty();
@@ -136,26 +182,32 @@ export function attachTerminal(id: string, spec: PaneSpec, host: HTMLElement) {
         '"Cascadia Mono", Consolas, "Courier New", monospace',
       fontSize: currentFontSize ?? 14,
       cursorBlink: true,
-      scrollback: 5000,
+      scrollback: currentScrollback,
       windowsPty,
-      theme: {
-        background: "#09090b",
-        foreground: "#e4e4e7",
-        cursor: "#e4e4e7",
-        selectionBackground: "#3f3f46",
-      },
+      theme: currentTheme,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    const search = new SearchAddon();
+    term.loadAddon(search);
+    term.loadAddon(new WebLinksAddon());
     term.onData((data) => {
-      void getBackend().then((b) => b.writePty(id, data));
+      void getBackend().then((b) => {
+        if (!broadcastEnabled) {
+          void b.writePty(id, data);
+          return;
+        }
+        for (const [otherId, other] of handles) {
+          if (other.spawned) void b.writePty(otherId, data);
+        }
+      });
     });
     term.attachCustomKeyEventHandler((ev) => handleKey(id, ev));
     container.addEventListener("contextmenu", (ev) => {
       ev.preventDefault();
       copyOrPaste(id);
     });
-    h = { term, fit, container, opened: false, spawned: false, cols: 0, rows: 0 };
+    h = { term, fit, search, container, opened: false, spawned: false, cols: 0, rows: 0 };
     handles.set(id, h);
   }
 
@@ -165,6 +217,15 @@ export function attachTerminal(id: string, spec: PaneSpec, host: HTMLElement) {
   if (!h.opened) {
     h.term.open(h.container);
     h.opened = true;
+    // WebGL renderer 需要在 open() 之後才能取得 canvas context；不支援的環境（例如
+    // 部分虛擬機/遠端桌面）建構或掛載時會丟例外，接住後 xterm 自動退回內建 canvas renderer
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => webgl.dispose());
+      h.term.loadAddon(webgl);
+    } catch {
+      /* 不支援 WebGL，維持預設 renderer */
+    }
   }
   fitTerminal(id);
 
@@ -213,6 +274,46 @@ export function fitTerminal(id: string) {
 
 export function focusTerminal(id: string) {
   handles.get(id)?.term.focus();
+}
+
+const SEARCH_DECORATIONS = {
+  matchBackground: "#3f3f46",
+  matchBorder: "#52525b",
+  matchOverviewRuler: "#52525b",
+  activeMatchBackground: "#854d0e",
+  activeMatchBorder: "#f59e0b",
+  activeMatchColorOverviewRuler: "#f59e0b",
+};
+
+export function searchNext(id: string, term: string): boolean {
+  if (!term) return false;
+  return (
+    handles
+      .get(id)
+      ?.search.findNext(term, { incremental: true, decorations: SEARCH_DECORATIONS }) ?? false
+  );
+}
+
+export function searchPrevious(id: string, term: string): boolean {
+  if (!term) return false;
+  return (
+    handles.get(id)?.search.findPrevious(term, { decorations: SEARCH_DECORATIONS }) ?? false
+  );
+}
+
+export function clearSearch(id: string) {
+  handles.get(id)?.search.clearDecorations();
+}
+
+/** 訂閱搜尋結果數量變化（顯示「3/12」用），回傳取消訂閱函式 */
+export function onSearchResults(
+  id: string,
+  cb: (e: ISearchResultChangeEvent) => void,
+): () => void {
+  const h = handles.get(id);
+  if (!h) return () => {};
+  const disposable = h.search.onDidChangeResults(cb);
+  return () => disposable.dispose();
 }
 
 /** 把文字直接送進某個 pane 的 pty，用來執行已儲存的常用指令 */

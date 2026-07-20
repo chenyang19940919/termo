@@ -8,6 +8,7 @@ import {
   FolderPlus,
   Pencil,
   Plus,
+  Radio,
   Settings,
   SquareTerminal,
   Terminal as TerminalIcon,
@@ -310,6 +311,7 @@ interface FolderDialogState {
 export function Sidebar() {
   const shells = useAppStore((s) => s.shells);
   const homeDir = useAppStore((s) => s.homeDir);
+  const broadcastMode = useAppStore((s) => s.broadcastMode);
 
   const [profileDialogOpen, setProfileDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Profile | null>(null);
@@ -346,6 +348,19 @@ export function Sidebar() {
         <SquareTerminal className="size-4" />
         <span className="text-sm font-semibold tracking-wide">Termo</span>
         <div className="flex-1" />
+        <Button
+          variant="ghost"
+          size="icon"
+          className={cn(
+            "size-6",
+            broadcastMode &&
+              "animate-pulse bg-amber-500 text-black hover:bg-amber-500 hover:text-black",
+          )}
+          title={broadcastMode ? "同步輸入：開啟中（點擊關閉）" : "同步輸入到所有終端機"}
+          onClick={() => useAppStore.getState().toggleBroadcast()}
+        >
+          <Radio className="size-4" />
+        </Button>
         <Button
           variant="ghost"
           size="icon"

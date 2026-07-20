@@ -58,3 +58,11 @@ export interface SplitNode {
 }
 
 export type LayoutNode = PaneNode | SplitNode;
+
+/** 一個分頁擁有自己獨立的版面樹；focusedPaneId 只是執行期狀態，不持久化 */
+export interface Workspace {
+  id: string;
+  name: string;
+  layout: LayoutNode | null;
+  focusedPaneId: string | null;
+}

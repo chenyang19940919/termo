@@ -1,12 +1,23 @@
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, DragEvent } from "react";
-import { SquareSplitHorizontal, SquareSplitVertical, X } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronUp,
+  Maximize2,
+  Minimize2,
+  SquareSplitHorizontal,
+  SquareSplitVertical,
+  X,
+} from "lucide-react";
 import { useAppStore } from "@/store/app";
 import {
   attachTerminal,
   detachTerminal,
   fitTerminal,
   focusTerminal,
+  onSearchResults,
+  searchNext,
+  searchPrevious,
 } from "@/lib/terminals";
 import { cn } from "@/lib/utils";
 import type { PaneNode } from "@/types";
@@ -42,9 +53,85 @@ function dropZoneStyle(zone: DropZone): CSSProperties {
   }
 }
 
+function SearchBar({ paneId }: { paneId: string }) {
+  const [term, setTerm] = useState("");
+  const [counts, setCounts] = useState<{ index: number; count: number } | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    return onSearchResults(paneId, (e) => {
+      setCounts(e.resultCount > 0 ? { index: e.resultIndex, count: e.resultCount } : null);
+    });
+  }, [paneId]);
+
+  function next() {
+    if (term) searchNext(paneId, term);
+  }
+  function prev() {
+    if (term) searchPrevious(paneId, term);
+  }
+
+  return (
+    <div className="absolute right-2 top-9 z-20 flex items-center gap-1 rounded-md border border-border bg-popover px-1.5 py-1 text-popover-foreground shadow-md">
+      <input
+        ref={inputRef}
+        value={term}
+        onChange={(e) => {
+          const v = e.target.value;
+          setTerm(v);
+          if (v) searchNext(paneId, v);
+          else setCounts(null);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            if (e.shiftKey) prev();
+            else next();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            useAppStore.getState().closeSearch();
+          }
+        }}
+        placeholder="搜尋…"
+        className="h-6 w-36 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+      />
+      <span className="min-w-8 text-center text-[11px] text-muted-foreground">
+        {counts ? `${counts.index + 1}/${counts.count}` : term ? "0/0" : ""}
+      </span>
+      <button
+        title="上一個 (Shift+Enter)"
+        className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+        disabled={!term}
+        onClick={prev}
+      >
+        <ChevronUp className="size-3.5" />
+      </button>
+      <button
+        title="下一個 (Enter)"
+        className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+        disabled={!term}
+        onClick={next}
+      >
+        <ChevronDown className="size-3.5" />
+      </button>
+      <button
+        title="關閉 (Esc)"
+        className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+        onClick={() => useAppStore.getState().closeSearch()}
+      >
+        <X className="size-3.5" />
+      </button>
+    </div>
+  );
+}
+
 export function TerminalPane({ node }: { node: PaneNode }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const focused = useAppStore((s) => s.focusedPaneId === node.id);
+  const maximized = useAppStore((s) => s.maximizedPaneId === node.id);
+  const searchOpen = useAppStore((s) => s.searchPaneId === node.id);
+  const background = useAppStore((s) => s.settings.theme.background);
   const [dropZone, setDropZone] = useState<DropZone | null>(null);
 
   useEffect(() => {
@@ -69,9 +156,10 @@ export function TerminalPane({ node }: { node: PaneNode }) {
   return (
     <div
       className={cn(
-        "relative flex h-full flex-col overflow-hidden bg-[#09090b]",
+        "relative flex h-full flex-col overflow-hidden",
         focused && "ring-1 ring-ring/70 ring-inset",
       )}
+      style={{ backgroundColor: background }}
       onMouseDown={() => useAppStore.getState().setFocused(node.id)}
       onDragOver={(e) => {
         if (!e.dataTransfer.types.includes(PANE_DRAG_MIME)) return;
@@ -144,6 +232,17 @@ export function TerminalPane({ node }: { node: PaneNode }) {
             <SquareSplitVertical className="size-3.5" />
           </button>
           <button
+            title={maximized ? "還原 (Ctrl+Shift+M)" : "最大化 (Ctrl+Shift+M)"}
+            className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+            onClick={() => useAppStore.getState().toggleMaximize(node.id)}
+          >
+            {maximized ? (
+              <Minimize2 className="size-3.5" />
+            ) : (
+              <Maximize2 className="size-3.5" />
+            )}
+          </button>
+          <button
             title="關閉 (Ctrl+Shift+W)"
             className="rounded p-0.5 text-muted-foreground hover:bg-destructive/20 hover:text-destructive"
             onClick={() => useAppStore.getState().closePane(node.id)}
@@ -152,6 +251,7 @@ export function TerminalPane({ node }: { node: PaneNode }) {
           </button>
         </div>
       </div>
+      {searchOpen && <SearchBar paneId={node.id} />}
       <div ref={hostRef} className="min-h-0 flex-1" />
     </div>
   );
