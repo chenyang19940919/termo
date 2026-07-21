@@ -78,4 +78,19 @@
     height: 100%;
     padding: 4px 0 0 8px;
   }
+  /* 側邊欄項目文字過長時顯示細滾動軸，取代直接截斷 */
+  .h-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  .h-scroll::-webkit-scrollbar {
+    height: 4px;
+  }
+  .h-scroll::-webkit-scrollbar-thumb {
+    background-color: var(--border);
+    border-radius: 2px;
+  }
+  .h-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
 }

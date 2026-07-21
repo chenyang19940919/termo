@@ -137,9 +137,11 @@ function ProfileRow({ profile: p, indent, onEdit }: ProfileRowProps) {
         className={cn("size-4 shrink-0", !p.color && "text-muted-foreground")}
         style={p.color ? { color: p.color } : undefined}
       />
-      <div className="pointer-events-none min-w-0 flex-1">
-        <div className="truncate text-sm">{p.name}</div>
-        <div className="truncate text-[11px] text-muted-foreground/70">
+      <div className="min-w-0 flex-1 overflow-hidden">
+        <div className="h-scroll overflow-x-auto whitespace-nowrap text-sm">
+          {p.name}
+        </div>
+        <div className="h-scroll overflow-x-auto whitespace-nowrap text-[11px] text-muted-foreground/70">
           {p.cwd || p.shellName}
         </div>
       </div>

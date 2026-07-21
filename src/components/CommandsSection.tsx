@@ -147,9 +147,11 @@ function CommandRow({ command: c, indent, onEdit }: CommandRowProps) {
       }}
     >
       <SquareTerminal className="size-4 shrink-0 text-muted-foreground" />
-      <div className="pointer-events-none min-w-0 flex-1">
-        <div className="truncate text-sm">{c.name}</div>
-        <div className="truncate text-[11px] text-muted-foreground/70">
+      <div className="min-w-0 flex-1 overflow-hidden">
+        <div className="h-scroll overflow-x-auto whitespace-nowrap text-sm">
+          {c.name}
+        </div>
+        <div className="h-scroll overflow-x-auto whitespace-nowrap text-[11px] text-muted-foreground/70">
           {c.command}
         </div>
       </div>
