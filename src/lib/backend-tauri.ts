@@ -79,5 +79,11 @@ export function createTauriBackend(): Backend {
     writeTextFile(path, contents) {
       return invoke("write_text_file", { path, contents });
     },
+
+    async initialOpenPath() {
+      return null;
+    },
+
+    onOpenPath() {},
   };
 }

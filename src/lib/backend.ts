@@ -41,6 +41,10 @@ export interface Backend {
   openDialog(opts: { filters?: DialogFilter[] }): Promise<string | null>;
   readTextFile(path: string): Promise<string>;
   writeTextFile(path: string, contents: string): Promise<void>;
+  /** Explorer 右鍵選單等系統殼層帶入的啟動路徑，只會有一次；沒有則為 null。目前僅 Electron 支援，Tauri 固定回傳 null */
+  initialOpenPath(): Promise<string | null>;
+  /** app 已在執行時，系統殼層又要求開啟新路徑；整個生命週期只需註冊一次。目前僅 Electron 支援 */
+  onOpenPath(cb: (path: string) => void): void;
 }
 
 export const isTauri =

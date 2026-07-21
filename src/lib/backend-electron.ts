@@ -28,6 +28,8 @@ interface TermoBridge {
   openDialog(opts: { filters?: DialogFilter[] }): Promise<string | null>;
   readTextFile(path: string): Promise<string>;
   writeTextFile(path: string, contents: string): Promise<void>;
+  initialOpenPath(): Promise<string | null>;
+  onOpenPath(cb: (path: string) => void): void;
 }
 
 declare global {
@@ -113,6 +115,14 @@ export function createElectronBackend(): Backend {
 
     writeTextFile(path, contents) {
       return bridge.writeTextFile(path, contents);
+    },
+
+    initialOpenPath() {
+      return bridge.initialOpenPath();
+    },
+
+    onOpenPath(cb) {
+      bridge.onOpenPath(cb);
     },
   };
 }

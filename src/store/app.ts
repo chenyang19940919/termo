@@ -232,6 +232,7 @@ export interface AppState {
   importProfiles(): Promise<number>;
   openPane(spec: PaneSpec): void;
   openDefaultPane(): void;
+  openPathAsNewTab(cwd: string): void;
   splitPane(paneId: string, direction: Direction): void;
   movePane(
     sourceId: string,
@@ -358,6 +359,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       focusedPaneId: active.focusedPaneId,
       settings,
     });
+
+    const initialPath = await backend.initialOpenPath();
+    if (initialPath) get().openPathAsNewTab(initialPath);
+    backend.onOpenPath((p) => get().openPathAsNewTab(p));
   },
 
   updateSettings(s) {
@@ -690,6 +695,21 @@ export const useAppStore = create<AppState>((set, get) => ({
       shellPath: shell.path,
       args: shell.args,
       cwd: homeDir,
+    });
+  },
+
+  // Explorer 右鍵選單「在 Termo 開啟」的進入點：不管是啟動時就帶路徑、
+  // 還是已經在跑時收到系統殼層轉發的新路徑，都走這裡開一個新分頁，
+  // 而不是動到使用者原本還原出來的分頁/版面
+  openPathAsNewTab(cwd) {
+    const shell = get().shells[0];
+    if (!shell) return;
+    get().addWorkspace();
+    get().openPane({
+      name: shell.name,
+      shellPath: shell.path,
+      args: shell.args,
+      cwd,
     });
   },
 

@@ -16,6 +16,32 @@ const os = require("node:os");
 const pty = require("node-pty");
 const { autoUpdater } = require("electron-updater");
 
+// Explorer 右鍵選單「在 Termo 開啟」寫入的 command 是 `Termo.exe --open-path "%V"`。
+// 用明確 flag 而不是取最後一個參數，是因為 dev 模式用 `electron .` 啟動，argv 最後一個
+// 元素會是 "."（一個合法目錄），若照位置取值會誤判成使用者要開啟的路徑。
+function extractOpenPath(argv) {
+  const eq = argv.find((a) => a.startsWith("--open-path="));
+  const flagIdx = argv.indexOf("--open-path");
+  const raw = eq ? eq.slice("--open-path=".length) : flagIdx !== -1 ? argv[flagIdx + 1] : null;
+  if (!raw) return null;
+  try {
+    return fs.statSync(raw).isDirectory() ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+// 開啟時就先讀一次自己的 argv：如果是「已有實例在跑」，這個值不會被用到
+// （下面 requestSingleInstanceLock 失敗就直接 quit），只有真的變成主程序時才有意義。
+let pendingOpenPath = extractOpenPath(process.argv);
+
+// 確保同時間只有一個 Termo 視窗：拿不到鎖代表已經有實例在跑，
+// 這個新程序把自己的路徑透過 OS 轉發給既有實例（見下面 second-instance），然後結束自己。
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+  return;
+}
+
 /** @type {Map<string, import("node-pty").IPty>} */
 const sessions = new Map();
 
@@ -161,6 +187,14 @@ ipcMain.handle("shells:detect", () => detectShells());
 
 ipcMain.handle("home:dir", () => os.homedir());
 
+// renderer 開機 init() 完成、shells 都 detect 好之後才會來拉這個值，
+// 所以不用擔心 App 還沒 ready 就被塞一個 open-path 事件的 race
+ipcMain.handle("path:initial", () => {
+  const p = pendingOpenPath;
+  pendingOpenPath = null;
+  return p;
+});
+
 // os.release() 在 Windows 上是 "10.0.<build>"，直接取 build number 給 xterm 的 windowsPty 選項用
 ipcMain.handle("os:windows-build", () => Number(os.release().split(".")[2]) || 0);
 
@@ -200,6 +234,17 @@ ipcMain.handle("fs:read", (_e, p) => fsp.readFile(p, "utf-8"));
 ipcMain.handle("fs:write", (_e, { path: p, contents }) =>
   fsp.writeFile(p, contents, "utf-8"),
 );
+
+// 已有實例在跑時，第二次啟動（另一次右鍵「在 Termo 開啟」）會走到這裡：
+// 把既有視窗拉到前面，並把新路徑轉發給 renderer 開一個新分頁，而不是開第二個視窗
+app.on("second-instance", (_event, argv) => {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  const targetPath = extractOpenPath(argv);
+  if (targetPath) mainWindow.webContents.send("open-path", targetPath);
+});
 
 // 外部連結一律交給系統瀏覽器，不在殼內開新視窗
 app.on("web-contents-created", (_e, contents) => {

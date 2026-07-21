@@ -20,4 +20,6 @@ contextBridge.exposeInMainWorld("termoBridge", {
   readTextFile: (p) => ipcRenderer.invoke("fs:read", p),
   writeTextFile: (p, contents) =>
     ipcRenderer.invoke("fs:write", { path: p, contents }),
+  initialOpenPath: () => ipcRenderer.invoke("path:initial"),
+  onOpenPath: (cb) => ipcRenderer.on("open-path", (_e, path) => cb(path)),
 });
